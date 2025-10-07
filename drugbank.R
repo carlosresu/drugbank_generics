@@ -529,7 +529,14 @@ if (!length(all_ids)) {
 
   buffer <- list()
   buffer_rows <- 0L
-  target_rows <- 10000L
+  target_rows <- 5000L
+  max_merge_rows <- 4000L
+  split_indices <- function(n, chunk_size) {
+    if (!n || chunk_size <= 0L || n <= chunk_size) {
+      return(list(seq_len(n)))
+    }
+    split(seq_len(n), ceiling(seq_along(seq_len(n)) / chunk_size))
+  }
 
   progressr::with_progress({
     p <- progressr::progressor(steps = length(all_ids), label = "Writing output batches")
@@ -552,6 +559,7 @@ if (!length(all_ids)) {
       rows_emitted_for_id <- 0L
       handle_chunk <- function(chunk_dt) {
         if (!nrow(chunk_dt)) return(invisible(NULL))
+        chunk_dt <- data.table::copy(chunk_dt)
         chunk_dt <- chunk_dt[!is.na(text) & nzchar(text)]
         if (!nrow(chunk_dt)) return(invisible(NULL))
 
@@ -604,12 +612,9 @@ if (!length(all_ids)) {
 
       if (nrow(non_local)) {
         if (nrow(route_local)) {
-          route_chunk_size <- 250L
-          idx_split <- split(
-            seq_len(nrow(route_local)),
-            ((seq_len(nrow(route_local)) - 1L) %/% route_chunk_size) + 1L
-          )
-          for (idx in idx_split) {
+          per_route_cap <- max(1L, min(nrow(route_local), max_merge_rows %/% max(1L, nrow(non_local))))
+          route_chunks <- split_indices(nrow(route_local), per_route_cap)
+          for (idx in route_chunks) {
             chunk <- merge(
               non_local,
               route_local[idx],
@@ -620,12 +625,18 @@ if (!length(all_ids)) {
             handle_chunk(chunk)
           }
         } else {
-          handle_chunk(non_local)
+          non_cap <- max(1L, min(nrow(non_local), max_merge_rows))
+          for (idx in split_indices(nrow(non_local), non_cap)) {
+            handle_chunk(non_local[idx])
+          }
         }
       }
 
       if (nrow(product_local)) {
-        handle_chunk(product_local)
+        prod_cap <- max(1L, min(nrow(product_local), max_merge_rows))
+        for (idx in split_indices(nrow(product_local), prod_cap)) {
+          handle_chunk(product_local[idx])
+        }
       }
 
       if (!rows_emitted_for_id) {
