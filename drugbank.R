@@ -15,10 +15,8 @@
 # Output:
 #   output/drugbank_authority.csv
 #     (columns: text, text_type, text_subtype, generic_name, brand_name,
-#      brand_company, drugbank_id, atc_code, atc_level_1_code, atc_level_1_desc,
-#      atc_level_2_code, atc_level_2_desc, atc_level_3_code, atc_level_3_desc,
-#      atc_level_4_code, atc_level_4_desc, is_combo, route, dosage_form,
-#      strength, country, source, labeller, data_origin)
+#      brand_company, drugbank_id, atc_code, is_combo, route, dosage_form,
+#      strength, source, data_origin)
 # =================================
 
 ensure_installed <- function(packages, repos = "https://cloud.r-project.org") {
@@ -237,15 +235,7 @@ atc_tbl <- as.data.table(dataset$drugs$atc_codes)[
   !is.na(atc_code) & nzchar(trimws(atc_code)),
   .(
     drugbank_id = as.character(drugbank_id),
-    atc_code = trimws(atc_code),
-    atc_level_1_code = trimws(code_1),
-    atc_level_1_desc = trimws(level_1),
-    atc_level_2_code = trimws(code_2),
-    atc_level_2_desc = trimws(level_2),
-    atc_level_3_code = trimws(code_3),
-    atc_level_3_desc = trimws(level_3),
-    atc_level_4_code = trimws(code_4),
-    atc_level_4_desc = trimws(level_4)
+    atc_code = trimws(atc_code)
   )
 ]
 atc_tbl[, suffix := suppressWarnings(as.integer(sub(".*(..)$", "\\1", atc_code)))]
@@ -361,9 +351,7 @@ dosages_tbl <- as.data.table(dataset$drugs$dosages)[
     route = normalize_route_field(route),
     dosage_form = trimws(form),
     strength = tolower(trimws(strength)),
-    country = NA_character_,
     source = "DOSAGES",
-    labeller = NA_character_,
     data_origin = "dosage"
   )
 ]
@@ -375,16 +363,14 @@ products_base <- as.data.table(dataset$products)[
   , .(
     drugbank_id = as.character(drugbank_id),
     product_name = collapse_ws(name),
-    labeller = collapse_ws(labeller),
     route = normalize_route_field(route),
     dosage_form = trimws(dosage_form),
     strength = tolower(trimws(strength)),
-    country = trimws(country),
     source = trimws(source)
   )
 ]
 products_base <- products_base[!(drugbank_id %chin% bad_ids)]
-for (col in c("product_name", "labeller", "dosage_form", "strength", "country", "source")) {
+for (col in c("product_name", "dosage_form", "strength", "source")) {
   products_base[, (col) := {
     val <- get(col)
     val[!nzchar(val)] <- NA_character_
@@ -400,8 +386,8 @@ simplify_form_column(products_base, "dosage_form", "Simplifying dosage forms (pr
 
 route_form_all <- unique(rbindlist(
   list(
-    dosages_tbl[, .(drugbank_id, route, dosage_form, strength, country, source, labeller, data_origin)],
-    products_base[, .(drugbank_id, route, dosage_form, strength, country, source, labeller, data_origin)]
+    dosages_tbl[, .(drugbank_id, route, dosage_form, strength, source, data_origin)],
+    products_base[, .(drugbank_id, route, dosage_form, strength, source, data_origin)]
   ),
   use.names = TRUE,
   fill = TRUE
@@ -411,7 +397,7 @@ product_brand_admin <- products_base[
   !is.na(brand) & nzchar(brand),
   .(
     drugbank_id, brand_name = brand, route, dosage_form,
-    strength, country, source, labeller, data_origin
+    strength, source, data_origin
   )
 ]
 
@@ -433,12 +419,8 @@ non_product_texts <- merge(non_product_texts, primary_gi, by = "drugbank_id", al
 desired_cols <- c(
   "text", "text_type", "text_subtype", "generic_name", "brand_name",
   "brand_company", "drugbank_id", "atc_code",
-  "atc_level_1_code", "atc_level_1_desc",
-  "atc_level_2_code", "atc_level_2_desc",
-  "atc_level_3_code", "atc_level_3_desc",
-  "atc_level_4_code", "atc_level_4_desc",
   "is_combo", "route", "dosage_form", "strength",
-  "country", "source", "labeller", "data_origin"
+  "source", "data_origin"
 )
 
 # ---------- Product-derived brand rows ----------
@@ -505,7 +487,7 @@ if (!length(all_ids)) {
       new_mask <- !vapply(vals, exists, logical(1), envir = seen, inherits = FALSE)
       if (!any(new_mask)) return(invisible(NULL))
       new_vals <- vals[new_mask]
-    for (v in new_vals) assign(v, TRUE, envir = seen)
+      for (v in new_vals) assign(v, TRUE, envir = seen)
       count <<- count + length(new_vals)
       invisible(NULL)
     }
