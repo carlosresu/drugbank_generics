@@ -170,7 +170,9 @@ extract_product_brand <- function(names, brand_pool) {
 
 simplify_form_column <- function(DT, column, label) {
   n <- nrow(DT)
-  if (!n) return(invisible(NULL))
+  if (!n) {
+    return(invisible(NULL))
+  }
   chunk_size <- 50000L
   starts <- seq.int(1L, n, by = chunk_size)
   progressr::with_progress({
@@ -194,13 +196,16 @@ expand_route_form <- function(DT) {
   tmp[, route_list := lapply(route, split_semicolon)]
   tmp[, dosage_form_list := lapply(dosage_form, split_semicolon)]
   tmp[, rid := .I]
-  expanded <- tmp[, {
-    rl <- route_list[[1L]]
-    if (length(rl) == 0L) rl <- NA_character_
-    fl <- dosage_form_list[[1L]]
-    if (length(fl) == 0L) fl <- NA_character_
-    CJ(route = rl, dosage_form = fl, unique = TRUE)
-  }, by = .(rid)]
+  expanded <- tmp[,
+    {
+      rl <- route_list[[1L]]
+      if (length(rl) == 0L) rl <- NA_character_
+      fl <- dosage_form_list[[1L]]
+      if (length(fl) == 0L) fl <- NA_character_
+      CJ(route = rl, dosage_form = fl, unique = TRUE)
+    },
+    by = .(rid)
+  ]
   expanded <- merge(
     expanded,
     tmp[, setdiff(names(tmp), c("route", "dosage_form", "route_list", "dosage_form_list")), with = FALSE],
@@ -315,7 +320,8 @@ mix <- mix[!(drugbank_id %chin% bad_ids)]
 mix_name <- mix[
   !is.na(name) & nzchar(name),
   .(
-    drugbank_id, text = name,
+    drugbank_id,
+    text = name,
     text_type = "mixture",
     text_subtype = "mixture_name",
     brand_name = NA_character_,
@@ -396,7 +402,8 @@ route_form_all <- unique(rbindlist(
 product_brand_admin <- products_base[
   !is.na(brand) & nzchar(brand),
   .(
-    drugbank_id, brand_name = brand, route, dosage_form,
+    drugbank_id,
+    brand_name = brand, route, dosage_form,
     strength, source, data_origin
   )
 ]
@@ -482,10 +489,14 @@ if (!length(all_ids)) {
     count <- 0L
     add <- function(values) {
       vals <- values[!is.na(values)]
-      if (!length(vals)) return(invisible(NULL))
+      if (!length(vals)) {
+        return(invisible(NULL))
+      }
       vals <- unique(vals)
       new_mask <- !vapply(vals, exists, logical(1), envir = seen, inherits = FALSE)
-      if (!any(new_mask)) return(invisible(NULL))
+      if (!any(new_mask)) {
+        return(invisible(NULL))
+      }
       new_vals <- vals[new_mask]
       for (v in new_vals) assign(v, TRUE, envir = seen)
       count <<- count + length(new_vals)
@@ -518,93 +529,110 @@ if (!length(all_ids)) {
 
   buffer <- list()
   buffer_rows <- 0L
-  target_rows <- 20000L
+  target_rows <- 10000L
 
   progressr::with_progress({
     p <- progressr::progressor(steps = length(all_ids), label = "Writing output batches")
     for (i in seq_along(all_ids)) {
       id <- all_ids[[i]]
-      non_local <- non_product_texts[J(id), nomatch = 0L]
-      route_local <- route_form_all[J(id), nomatch = 0L]
-      non_rows <- if (nrow(non_local)) {
-        merge(
-          non_local,
-          route_local,
-          by = "drugbank_id",
-          all.x = TRUE,
-          allow.cartesian = TRUE
-        )
-      } else {
-        non_local
-      }
-      product_local <- product_brand_rows[J(id), nomatch = 0L]
-
-      chunk_components <- list()
-      if (nrow(non_rows)) chunk_components[[length(chunk_components) + 1L]] <- non_rows
-      if (nrow(product_local)) chunk_components[[length(chunk_components) + 1L]] <- product_local
-
-      if (!length(chunk_components)) {
-        p(message = sprintf("Drug %d/%d (no text rows)", i, length(all_ids)))
-        next
-      }
-
-      combined_local <- rbindlist(chunk_components, use.names = TRUE, fill = TRUE)
-      combined_local <- combined_local[!is.na(text) & nzchar(text)]
-      if (!nrow(combined_local)) {
-        p(message = sprintf("Drug %d/%d (no text rows)", i, length(all_ids)))
-        next
-      }
-
       atc_local <- atc_tbl[J(id), nomatch = 0L]
-      combined_local <- merge(
-        combined_local,
-        atc_local,
-        by = "drugbank_id",
-        all.x = FALSE,
-        allow.cartesian = TRUE
-      )
-      if (!nrow(combined_local)) {
+      if (!nrow(atc_local)) {
         p(message = sprintf("Drug %d/%d (no ATC rows)", i, length(all_ids)))
         next
       }
-
-      combined_local <- merge(
-        combined_local,
-        combo_flag,
-        by = "drugbank_id",
-        all.x = TRUE
-      )
-      combined_local[is.na(is_combo), is_combo := FALSE]
-
-      expanded_local <- expand_route_form(combined_local)
-      if (!nrow(expanded_local)) {
-        p(message = sprintf("Drug %d/%d (no expanded rows)", i, length(all_ids)))
-        next
+      combo_local <- combo_flag[J(id), nomatch = 0L]
+      if (!nrow(combo_local)) {
+        combo_local <- data.table(drugbank_id = id, is_combo = FALSE)
       }
 
-      expanded_local[!nzchar(strength), strength := NA_character_]
+      non_local <- non_product_texts[J(id), nomatch = 0L]
+      route_local <- route_form_all[J(id), nomatch = 0L]
+      product_local <- product_brand_rows[J(id), nomatch = 0L]
 
-      missing_cols <- setdiff(desired_cols, names(expanded_local))
-      if (length(missing_cols)) {
-        for (col in missing_cols) expanded_local[, (col) := NA_character_]
+      rows_emitted_for_id <- 0L
+      handle_chunk <- function(chunk_dt) {
+        if (!nrow(chunk_dt)) return(invisible(NULL))
+        chunk_dt <- chunk_dt[!is.na(text) & nzchar(text)]
+        if (!nrow(chunk_dt)) return(invisible(NULL))
+
+        chunk_dt <- merge(
+          chunk_dt,
+          atc_local,
+          by = "drugbank_id",
+          all.x = FALSE,
+          allow.cartesian = TRUE
+        )
+        if (!nrow(chunk_dt)) return(invisible(NULL))
+
+        chunk_dt <- merge(
+          chunk_dt,
+          combo_local,
+          by = "drugbank_id",
+          all.x = TRUE
+        )
+        chunk_dt[is.na(is_combo), is_combo := FALSE]
+
+        expanded_local <- expand_route_form(chunk_dt)
+        if (!nrow(expanded_local)) return(invisible(NULL))
+
+        expanded_local[!nzchar(strength), strength := NA_character_]
+
+        missing_cols <- setdiff(desired_cols, names(expanded_local))
+        if (length(missing_cols)) {
+          for (col in missing_cols) expanded_local[, (col) := NA_character_]
+        }
+        setcolorder(expanded_local, desired_cols)
+        expanded_local <- unique(expanded_local)
+        setorder(expanded_local, text, text_type, generic_name, atc_code, route, dosage_form, strength)
+
+        buffer[[length(buffer) + 1L]] <<- expanded_local
+        rows_in_chunk <- nrow(expanded_local)
+        buffer_rows <<- buffer_rows + rows_in_chunk
+        rows_emitted_for_id <<- rows_emitted_for_id + rows_in_chunk
+        unique_tracker$add(as.character(expanded_local$text))
+
+        if (buffer_rows >= target_rows) {
+          flush_res <- flush_buffer(buffer, first_batch)
+          first_batch <<- flush_res$first_batch
+          rows_written <<- rows_written + flush_res$rows
+          buffer <<- list()
+          buffer_rows <<- 0L
+          invisible(gc(FALSE))
+        }
+        invisible(NULL)
       }
-      setcolorder(expanded_local, desired_cols)
 
-      buffer[[length(buffer) + 1L]] <- expanded_local
-      rows_in_chunk <- nrow(expanded_local)
-      buffer_rows <- buffer_rows + rows_in_chunk
-      unique_tracker$add(as.character(expanded_local$text))
-
-      if (buffer_rows >= target_rows) {
-        flush_res <- flush_buffer(buffer, first_batch)
-        first_batch <- flush_res$first_batch
-        rows_written <- rows_written + flush_res$rows
-        buffer <- list()
-        buffer_rows <- 0L
-        invisible(gc(FALSE))
+      if (nrow(non_local)) {
+        if (nrow(route_local)) {
+          route_chunk_size <- 250L
+          idx_split <- split(
+            seq_len(nrow(route_local)),
+            ((seq_len(nrow(route_local)) - 1L) %/% route_chunk_size) + 1L
+          )
+          for (idx in idx_split) {
+            chunk <- merge(
+              non_local,
+              route_local[idx],
+              by = "drugbank_id",
+              all.x = TRUE,
+              allow.cartesian = TRUE
+            )
+            handle_chunk(chunk)
+          }
+        } else {
+          handle_chunk(non_local)
+        }
       }
 
-      p(message = sprintf("Drug %d/%d (%d rows, buffer %d)", i, length(all_ids), rows_in_chunk, buffer_rows))
+      if (nrow(product_local)) {
+        handle_chunk(product_local)
+      }
+
+      if (!rows_emitted_for_id) {
+        p(message = sprintf("Drug %d/%d (no output rows)", i, length(all_ids)))
+      } else {
+        p(message = sprintf("Drug %d/%d (%d rows, buffer %d)", i, length(all_ids), rows_emitted_for_id, buffer_rows))
+      }
     }
   })
 
