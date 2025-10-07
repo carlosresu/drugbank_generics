@@ -487,14 +487,12 @@ setkey(combo_flag, drugbank_id)
 
 if (file.exists(output_path)) file.remove(output_path)
 
-batch_size <- 200L
 all_ids <- atc_ids
 if (!length(all_ids)) {
   empty_out <- make_empty_output(desired_cols)
   fwrite(empty_out, output_path)
   message("Wrote: ", output_path, " (0 rows, 0 unique texts)")
 } else {
-  batches <- split(all_ids, ceiling(seq_along(all_ids) / batch_size))
   rows_written <- 0L
   first_batch <- TRUE
   unique_tracker <- local({
@@ -507,7 +505,7 @@ if (!length(all_ids)) {
       new_mask <- !vapply(vals, exists, logical(1), envir = seen, inherits = FALSE)
       if (!any(new_mask)) return(invisible(NULL))
       new_vals <- vals[new_mask]
-      for (v in new_vals) assign(v, TRUE, envir = seen)
+    for (v in new_vals) assign(v, TRUE, envir = seen)
       count <<- count + length(new_vals)
       invisible(NULL)
     }
@@ -515,12 +513,37 @@ if (!length(all_ids)) {
     list(add = add, get = get)
   })
 
+  flush_buffer <- function(buffer, first_batch_flag) {
+    if (!length(buffer)) {
+      return(list(first_batch = first_batch_flag, rows = 0L))
+    }
+    combined <- rbindlist(buffer, use.names = TRUE, fill = TRUE)
+    missing_cols <- setdiff(desired_cols, names(combined))
+    if (length(missing_cols)) {
+      for (col in missing_cols) combined[, (col) := NA_character_]
+    }
+    setcolorder(combined, desired_cols)
+    combined <- unique(combined)
+    setorder(combined, text, text_type, generic_name, atc_code, route, dosage_form, strength)
+    fwrite(
+      combined,
+      output_path,
+      append = !first_batch_flag,
+      col.names = first_batch_flag
+    )
+    list(first_batch = FALSE, rows = nrow(combined))
+  }
+
+  buffer <- list()
+  buffer_rows <- 0L
+  target_rows <- 20000L
+
   progressr::with_progress({
-    p <- progressr::progressor(steps = length(batches), label = "Writing output batches")
-    for (i in seq_along(batches)) {
-      ids <- batches[[i]]
-      non_local <- non_product_texts[J(ids), nomatch = 0L]
-      route_local <- route_form_all[J(ids), nomatch = 0L]
+    p <- progressr::progressor(steps = length(all_ids), label = "Writing output batches")
+    for (i in seq_along(all_ids)) {
+      id <- all_ids[[i]]
+      non_local <- non_product_texts[J(id), nomatch = 0L]
+      route_local <- route_form_all[J(id), nomatch = 0L]
       non_rows <- if (nrow(non_local)) {
         merge(
           non_local,
@@ -532,24 +555,25 @@ if (!length(all_ids)) {
       } else {
         non_local
       }
-      product_local <- product_brand_rows[J(ids), nomatch = 0L]
+      product_local <- product_brand_rows[J(id), nomatch = 0L]
 
       chunk_components <- list()
       if (nrow(non_rows)) chunk_components[[length(chunk_components) + 1L]] <- non_rows
       if (nrow(product_local)) chunk_components[[length(chunk_components) + 1L]] <- product_local
+
       if (!length(chunk_components)) {
-        p(message = sprintf("Batch %d/%d (0 input rows)", i, length(batches)))
+        p(message = sprintf("Drug %d/%d (no text rows)", i, length(all_ids)))
         next
       }
 
       combined_local <- rbindlist(chunk_components, use.names = TRUE, fill = TRUE)
       combined_local <- combined_local[!is.na(text) & nzchar(text)]
       if (!nrow(combined_local)) {
-        p(message = sprintf("Batch %d/%d (0 rows after text filter)", i, length(batches)))
+        p(message = sprintf("Drug %d/%d (no text rows)", i, length(all_ids)))
         next
       }
 
-      atc_local <- atc_tbl[J(ids), nomatch = 0L]
+      atc_local <- atc_tbl[J(id), nomatch = 0L]
       combined_local <- merge(
         combined_local,
         atc_local,
@@ -558,7 +582,7 @@ if (!length(all_ids)) {
         allow.cartesian = TRUE
       )
       if (!nrow(combined_local)) {
-        p(message = sprintf("Batch %d/%d (no ATC rows)", i, length(batches)))
+        p(message = sprintf("Drug %d/%d (no ATC rows)", i, length(all_ids)))
         next
       }
 
@@ -572,7 +596,7 @@ if (!length(all_ids)) {
 
       expanded_local <- expand_route_form(combined_local)
       if (!nrow(expanded_local)) {
-        p(message = sprintf("Batch %d/%d (0 rows after expand)", i, length(batches)))
+        p(message = sprintf("Drug %d/%d (no expanded rows)", i, length(all_ids)))
         next
       }
 
@@ -583,22 +607,30 @@ if (!length(all_ids)) {
         for (col in missing_cols) expanded_local[, (col) := NA_character_]
       }
       setcolorder(expanded_local, desired_cols)
-      expanded_local <- unique(expanded_local)
-      setorder(expanded_local, text, text_type, generic_name, atc_code, route, dosage_form, strength)
 
-      fwrite(
-        expanded_local,
-        output_path,
-        append = !first_batch,
-        col.names = first_batch
-      )
-      rows_written <- rows_written + nrow(expanded_local)
+      buffer[[length(buffer) + 1L]] <- expanded_local
+      rows_in_chunk <- nrow(expanded_local)
+      buffer_rows <- buffer_rows + rows_in_chunk
       unique_tracker$add(as.character(expanded_local$text))
-      first_batch <- FALSE
-      p(message = sprintf("Batch %d/%d (%d rows)", i, length(batches), nrow(expanded_local)))
-      if ((i %% 5L) == 0L) invisible(gc(FALSE))
+
+      if (buffer_rows >= target_rows) {
+        flush_res <- flush_buffer(buffer, first_batch)
+        first_batch <- flush_res$first_batch
+        rows_written <- rows_written + flush_res$rows
+        buffer <- list()
+        buffer_rows <- 0L
+        invisible(gc(FALSE))
+      }
+
+      p(message = sprintf("Drug %d/%d (%d rows, buffer %d)", i, length(all_ids), rows_in_chunk, buffer_rows))
     }
   })
+
+  if (buffer_rows > 0L) {
+    flush_res <- flush_buffer(buffer, first_batch)
+    first_batch <- flush_res$first_batch
+    rows_written <- rows_written + flush_res$rows
+  }
 
   if (rows_written == 0L) {
     fwrite(make_empty_output(desired_cols), output_path)
