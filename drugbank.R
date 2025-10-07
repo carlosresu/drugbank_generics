@@ -317,45 +317,32 @@ best_atc <- support_tbl[, .SD[1L], by = .(generic, route, form, dosage)][
   , .(generic, route, form, dosage, atc_code)
 ]
 
-# ---------- Explode route & form to true long format (robust) ----------
+# ---------- Explode route & form to true long format (robust cartesian) ----------
 explode_long <- function(DT) {
   tmp <- copy(DT)
   
-  # prepare list-cols
+  # create list-cols of routes/forms per row
   tmp[, route_list := lapply(route, split_semicolon)]
   tmp[, form_list  := lapply(form,  split_semicolon)]
+  tmp[, rid := .I]
   
-  # ensure non-empty lists (use NA to preserve rows)
-  tmp[, route_list := ensure_list_nonempty(route_list)]
-  tmp[, form_list  := ensure_list_nonempty(form_list)]
+  # build cartesian product per row (generic, dosage, atc_code, rid)
+  out <- tmp[, {
+    rl <- route_list[[1L]]; if (length(rl) == 0L) rl <- NA_character_
+    fl <- form_list[[1L]];  if (length(fl) == 0L) fl <- NA_character_
+    CJ(route = rl, form = fl, unique = TRUE)
+  }, by = .(generic, dosage, atc_code, rid)]
   
-  # explode routes while carrying form_list as a list-col (replicated per new row)
-  R <- tmp[, {
-    rl <- route_list[[1L]]
-    if (length(rl) == 0L) rl <- NA_character_
-    fl <- form_list[[1L]]
-    if (length(fl) == 0L) fl <- NA_character_
-    out <- data.table(route = rl)
-    # replicate the same form_list for each route row
-    out[, form_list := replicate(.N, fl, simplify = FALSE)]
-    out
-  }, by = .(generic, dosage, atc_code)]
+  out[, rid := NULL]
   
-  # explode forms for each (generic, route, dosage, atc_code)
-  L <- R[, {
-    fl <- form_list[[1L]]
-    if (length(fl) == 0L) fl <- NA_character_
-    data.table(form = fl)
-  }, by = .(generic, route, dosage, atc_code)]
+  # clean & normalize
+  out[route == "", route := NA_character_]
+  out[form  == "", form  := NA_character_]
   
-  # clean up & normalize
-  L[route == "", route := NA_character_]
-  L[form  == "", form  := NA_character_]
+  out[, route := ifelse(is.na(route), NA_character_, tolower(trimws(route)))]
+  out[, form  := ifelse(is.na(form),  NA_character_, simplify_form_vec(form))]
   
-  L[, route := ifelse(is.na(route), NA_character_, tolower(trimws(route)))]
-  L[, form  := ifelse(is.na(form),  NA_character_, simplify_form_vec(form))]
-  
-  unique(L[, .(generic, route, form, dosage, atc_code)])
+  unique(out[, .(generic, route, form, dosage, atc_code)])
 }
 
 final_long <- explode_long(best_atc)
