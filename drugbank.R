@@ -450,6 +450,8 @@ product_brand_rows[, `:=`(
   text_subtype = "product"
 )]
 
+generic_lookup <- setNames(primary_gi$generic_name, primary_gi$drugbank_id)
+
 # ---------- Streaming combine + attach ATC ----------
 atc_ids <- unique(atc_tbl$drugbank_id)
 non_product_texts <- non_product_texts[drugbank_id %chin% atc_ids]
@@ -542,9 +544,15 @@ if (!length(all_ids)) {
     p <- progressr::progressor(steps = length(all_ids), label = "Writing output batches")
     for (i in seq_along(all_ids)) {
       id <- all_ids[[i]]
+      drug_name <- generic_lookup[[id]]
+      drug_label <- if (!is.null(drug_name) && !is.na(drug_name) && nzchar(drug_name)) {
+        sprintf("%s [%s]", drug_name, id)
+      } else {
+        sprintf("[%s]", id)
+      }
       atc_local <- atc_tbl[J(id), nomatch = 0L]
       if (!nrow(atc_local)) {
-        p(message = sprintf("Drug %d/%d (no ATC rows)", i, length(all_ids)))
+        p(message = sprintf("Drug %d/%d %s (no ATC rows)", i, length(all_ids), drug_label))
         next
       }
       combo_local <- combo_flag[J(id), nomatch = 0L]
@@ -640,9 +648,9 @@ if (!length(all_ids)) {
       }
 
       if (!rows_emitted_for_id) {
-        p(message = sprintf("Drug %d/%d (no output rows)", i, length(all_ids)))
+        p(message = sprintf("Drug %d/%d %s (no output rows)", i, length(all_ids), drug_label))
       } else {
-        p(message = sprintf("Drug %d/%d (%d rows, buffer %d)", i, length(all_ids), rows_emitted_for_id, buffer_rows))
+        p(message = sprintf("Drug %d/%d %s (%d rows, buffer %d)", i, length(all_ids), drug_label, rows_emitted_for_id, buffer_rows))
       }
     }
   })
