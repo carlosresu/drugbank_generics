@@ -63,6 +63,14 @@ combine_values <- function(...) {
   unique_canonical(vals)
 }
 
+limit_items <- function(..., max_items = 25L) {
+  values <- combine_values(...)
+  if (!length(values)) return(character())
+  ord <- order(nchar(values), tolower(values), values)
+  values <- values[ord]
+  values[seq_len(min(length(values), max_items))]
+}
+
 split_ingredients <- function(value) {
   if (is.null(value) || length(value) == 0L) return(character())
   parts <- unlist(lapply(value, function(v) {
@@ -115,7 +123,7 @@ combine_list_column <- function(lst) {
 
 to_json_array <- function(values) {
   values <- combine_values(values)
-  if (!length(values)) "[]" else jsonlite::toJSON(values, auto_unbox = TRUE)
+  if (!length(values)) "[]" else jsonlite::toJSON(values, auto_unbox = FALSE)
 }
 
 script_dir <- get_script_dir()
@@ -139,35 +147,8 @@ general_dt <- as.data.table(dataset$drugs$general_information)[
 general_dt <- general_dt[!is.na(generic_name) & nzchar(generic_name)]
 if (length(excluded_ids)) general_dt <- general_dt[!(drugbank_id %chin% excluded_ids)]
 
-mix_dt <- as.data.table(dataset$drugs$mixtures)[
-  , .(
-    drugbank_id = as.character(drugbank_id),
-    ingredients = collapse_ws(ingredients)
-  )
-]
-if (length(excluded_ids)) mix_dt <- mix_dt[!(drugbank_id %chin% excluded_ids)]
-
-mix_components <- mix_dt[
-  !is.na(ingredients) & nzchar(ingredients),
-  {
-    parts <- unique_canonical(unlist(lapply(ingredients, split_ingredients), use.names = FALSE))
-    list(mix_components = list(parts))
-  },
-  by = drugbank_id
-]
-
-generic_dt <- merge(general_dt, mix_components, by = "drugbank_id", all.x = TRUE, sort = FALSE)
-ensure_list_column(generic_dt, "mix_components")
-
-generic_dt[, generic_parts := Map(function(name, mix) {
-  base <- split_ingredients(name)
-  combined <- combine_values(base, mix)
-  if (!length(combined)) {
-    fallback <- collapse_ws(name)
-    if (nzchar(fallback)) combined <- fallback
-  }
-  combined
-}, generic_name, mix_components)]
+generic_dt <- copy(general_dt)
+generic_dt[, generic_parts := lapply(generic_name, split_ingredients)]
 
 ensure_list_column(generic_dt, "generic_parts")
 generic_dt[, generic := vapply(generic_parts, function(parts) {
@@ -277,10 +258,29 @@ ensure_list_column(info_dt, "dosage_forms")
 ensure_list_column(info_dt, "dosage_doses")
 ensure_list_column(info_dt, "brand_names")
 
-info_dt[, applicable_products := Map(combine_values, product_names, brand_names)]
-info_dt[, route_values := Map(combine_values, product_routes, dosage_routes)]
-info_dt[, form_values := Map(combine_values, product_forms, dosage_forms)]
-info_dt[, dose_values := Map(combine_values, product_doses, dosage_doses)]
+MAX_BRANDS <- 40L
+MAX_PRODUCTS <- 50L
+MAX_ROUTES <- 40L
+MAX_FORMS <- 40L
+MAX_DOSES <- 60L
+
+info_dt[, applicable_products := Map(function(prod, brand) {
+  brand_vals <- limit_items(brand, max_items = MAX_BRANDS)
+  if (length(brand_vals)) return(brand_vals)
+  limit_items(prod, max_items = MAX_PRODUCTS)
+}, product_names, brand_names)]
+
+info_dt[, route_values := Map(function(prod_route, dosage_route) {
+  limit_items(prod_route, dosage_route, max_items = MAX_ROUTES)
+}, product_routes, dosage_routes)]
+
+info_dt[, form_values := Map(function(prod_form, dosage_form) {
+  limit_items(prod_form, dosage_form, max_items = MAX_FORMS)
+}, product_forms, dosage_forms)]
+
+info_dt[, dose_values := Map(function(prod_dose, dosage_dose) {
+  limit_items(prod_dose, dosage_dose, max_items = MAX_DOSES)
+}, product_doses, dosage_doses)]
 
 info_dt[, c(
   "product_names", "brand_names",
@@ -300,10 +300,10 @@ final_dt <- drug_atc[
     }
     generic_str <- if (length(generic_vec)) paste(generic_vec, collapse = "; ") else NA_character_
 
-    products <- combine_list_column(applicable_products)
-    doses <- combine_list_column(dose_values)
-    forms <- combine_list_column(form_values)
-    routes <- combine_list_column(route_values)
+    products <- limit_items(combine_list_column(applicable_products), max_items = MAX_PRODUCTS)
+    doses <- limit_items(combine_list_column(dose_values), max_items = MAX_DOSES)
+    forms <- limit_items(combine_list_column(form_values), max_items = MAX_FORMS)
+    routes <- limit_items(combine_list_column(route_values), max_items = MAX_ROUTES)
     ids <- combine_values(drugbank_id)
 
     list(
