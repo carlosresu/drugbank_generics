@@ -1,6 +1,8 @@
 # =================================
-# DrugBank → aggregated ATC-level CSV for ESOA ingestion
-# Output columns: generic, applicable_products, dose, form, route, atc_code, drugbank_ids
+# DrugBank → aggregated ATC-level generics + brand mapping for ESOA ingestion
+# Outputs:
+# - drugbank_generics.csv: generic, dose, form, route, atc_code, drugbank_ids
+# - drugbank_brands.csv: brand, generic
 # =================================
 
 ensure_installed <- function(packages, repos = "https://cloud.r-project.org") {
@@ -60,6 +62,20 @@ unique_canonical <- function(x) {
 combine_values <- function(...) {
   vals <- unlist(list(...), use.names = FALSE)
   unique_canonical(vals)
+}
+
+write_arrow_csv <- function(dt, path) {
+  cat(sprintf("Writing %s rows to %s\n", format(nrow(dt), big.mark = ","), path))
+  arrow_table <- arrow::Table$create(dt)
+  if ("write_csv_arrow" %in% getNamespaceExports("arrow")) {
+    arrow::write_csv_arrow(arrow_table, path)
+  } else if ("write_delim_arrow" %in% getNamespaceExports("arrow")) {
+    arrow::write_delim_arrow(arrow_table, path, delim = ",")
+  } else {
+    warning("Falling back to data.table::fwrite because Arrow CSV writers are unavailable.")
+    fwrite(dt, path)
+  }
+  cat("Done.\n")
 }
 
 split_ingredients <- function(value) {
@@ -123,7 +139,8 @@ collapse_pipe <- function(values) {
 script_dir <- get_script_dir()
 output_dir <- file.path(script_dir, "output")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-output_path <- file.path(output_dir, "drugbank_longform.csv")
+output_generics_path <- file.path(output_dir, "drugbank_generics.csv")
+output_brands_path <- file.path(output_dir, "drugbank_brands.csv")
 
 dataset <- drugbank
 
@@ -252,9 +269,31 @@ ensure_list_column(info_dt, "dosage_forms")
 ensure_list_column(info_dt, "dosage_doses")
 ensure_list_column(info_dt, "brand_names")
 
-info_dt[, applicable_products := Map(function(prod, brand) {
-  combine_values(brand, prod)
-}, product_names, brand_names)]
+brands_output <- info_dt[
+  ,
+  {
+    brand_vec <- brand_names[[1]]
+    if (!length(brand_vec)) {
+      return(NULL)
+    }
+    generic_vec <- unique_canonical(generic_parts[[1]])
+    if (!length(generic_vec)) {
+      generic_vec <- combine_values(generic)
+    }
+    generic_str <- if (length(generic_vec)) paste(generic_vec, collapse = "; ") else NA_character_
+    data.table(
+      brand = brand_vec,
+      generic = generic_str
+    )
+  },
+  by = drugbank_id
+]
+if (!is.null(brands_output) && nrow(brands_output)) {
+  brands_output <- unique(brands_output, by = c("brand", "generic"))
+  setorder(brands_output, brand, generic)
+} else {
+  brands_output <- data.table(brand = character(), generic = character())
+}
 
 info_dt[, route_values := Map(function(prod_route, dosage_route) {
   combine_values(prod_route, dosage_route)
@@ -277,7 +316,7 @@ info_dt[, c(
 
 drug_atc <- merge(atc_dt, info_dt, by = "drugbank_id", all.x = TRUE, sort = FALSE)
 
-final_dt <- drug_atc[
+generics_dt <- drug_atc[
   ,
   {
     generic_vec <- combine_list_column(generic_parts)
@@ -286,7 +325,6 @@ final_dt <- drug_atc[
     }
     generic_str <- if (length(generic_vec)) paste(generic_vec, collapse = "; ") else NA_character_
 
-    products <- combine_list_column(applicable_products)
     doses <- combine_list_column(dose_values)
     forms <- combine_list_column(form_values)
     routes <- combine_list_column(route_values)
@@ -294,7 +332,6 @@ final_dt <- drug_atc[
 
     list(
       generic = generic_str,
-      applicable_products = list(products),
       dose = list(doses),
       form = list(forms),
       route = list(routes),
@@ -304,29 +341,17 @@ final_dt <- drug_atc[
   by = atc_code
 ]
 
-final_dt[, applicable_products := vapply(applicable_products, collapse_pipe, character(1))]
-final_dt[, dose := vapply(dose, collapse_pipe, character(1))]
-final_dt[, form := vapply(form, collapse_pipe, character(1))]
-final_dt[, route := vapply(route, collapse_pipe, character(1))]
-final_dt[, drugbank_ids := vapply(drugbank_ids, collapse_pipe, character(1))]
+generics_dt[, dose := vapply(dose, collapse_pipe, character(1))]
+generics_dt[, form := vapply(form, collapse_pipe, character(1))]
+generics_dt[, route := vapply(route, collapse_pipe, character(1))]
+generics_dt[, drugbank_ids := vapply(drugbank_ids, collapse_pipe, character(1))]
 
-setcolorder(final_dt, c("generic", "applicable_products", "dose", "form", "route", "atc_code", "drugbank_ids"))
-setorder(final_dt, atc_code)
+setcolorder(generics_dt, c("generic", "dose", "form", "route", "atc_code", "drugbank_ids"))
+setorder(generics_dt, atc_code)
 
-if (nrow(final_dt) > 100000) {
-  message(sprintf("Output currently has %s rows (>100k)", format(nrow(final_dt), big.mark = ",")))
+if (nrow(generics_dt) > 100000) {
+  message(sprintf("Generics output currently has %s rows (>100k)", format(nrow(generics_dt), big.mark = ",")))
 }
 
-cat(sprintf("Writing %s rows to %s\n", format(nrow(final_dt), big.mark = ","), output_path))
-arrow_table <- arrow::Table$create(final_dt)
-
-if ("write_csv_arrow" %in% getNamespaceExports("arrow")) {
-  arrow::write_csv_arrow(arrow_table, output_path)
-} else if ("write_delim_arrow" %in% getNamespaceExports("arrow")) {
-  arrow::write_delim_arrow(arrow_table, output_path, delim = ",")
-} else {
-  warning("Falling back to data.table::fwrite because Arrow CSV writers are unavailable.")
-  fwrite(final_dt, output_path)
-}
-
-cat("Done.\n")
+write_arrow_csv(generics_dt, output_generics_path)
+write_arrow_csv(brands_output, output_brands_path)
