@@ -157,7 +157,7 @@ mass_to_mg <- function(value, unit) {
   )
 }
 
-PER_UNIT_MAP <- c(
+PER_UNIT_MAP <- list(
   "ml" = "ml",
   "l" = "l",
   "tab" = "tablet",
@@ -335,7 +335,7 @@ normalize_dose_vector <- function(values) {
   unique_canonical(out)
 }
 
-FORM_CANONICAL_MAP <- c(
+FORM_CANONICAL_MAP <- list(
   "tab" = "tablet",
   "tabs" = "tablet",
   "tablet" = "tablet",
@@ -389,6 +389,7 @@ FORM_CANONICAL_MAP <- c(
 )
 
 FORM_CANONICAL_KEYS <- names(FORM_CANONICAL_MAP)[order(nchar(names(FORM_CANONICAL_MAP)), decreasing = TRUE)]
+FORM_CANONICAL_VALUES <- unique(unlist(FORM_CANONICAL_MAP, use.names = FALSE))
 RELEASE_PATTERN <- "(extended(?:-|\u0020)?release|immediate(?:-|\u0020)?release|delayed(?:-|\u0020)?release|sustained(?:-|\u0020)?release|controlled(?:-|\u0020)?release)"
 
 normalize_form_value <- function(value) {
@@ -404,7 +405,7 @@ normalize_form_value <- function(value) {
   }
   base_part <- strsplit(s, "[,;/]", perl = TRUE)[[1]]
   base_token <- if (length(base_part)) trimws(base_part[1]) else s
-  canonical <- FORM_CANONICAL_MAP[[base_token]]
+  canonical <- if (base_token %chin% names(FORM_CANONICAL_MAP)) FORM_CANONICAL_MAP[[base_token]] else NULL
   if (is.null(canonical)) {
     for (key in FORM_CANONICAL_KEYS) {
       if (grepl(paste0("\\b", key, "\\b"), base_token, perl = TRUE)) {
@@ -414,7 +415,7 @@ normalize_form_value <- function(value) {
     }
   }
   if (is.null(canonical)) {
-    for (value_candidate in unique(FORM_CANONICAL_MAP)) {
+    for (value_candidate in FORM_CANONICAL_VALUES) {
       if (grepl(paste0("\\b", value_candidate, "\\b"), base_token, perl = TRUE)) {
         canonical <- value_candidate
         break
@@ -443,7 +444,7 @@ normalize_form_vector <- function(values) {
   unique_canonical(out)
 }
 
-FORM_TO_ROUTE_CANONICAL <- c(
+FORM_TO_ROUTE_CANONICAL <- list(
   "tablet" = "oral", "tab" = "oral", "tabs" = "oral", "chewing gum" = "oral",
   "capsule" = "oral", "cap" = "oral", "caps" = "oral", "capsules" = "oral",
   "syrup" = "oral", "suspension" = "oral", "susp" = "oral", "solution" = "oral", "soln" = "oral", "sol" = "oral",
@@ -465,7 +466,7 @@ FORM_TO_ROUTE_CANONICAL <- c(
   "implant" = "subcutaneous", "s.c. implant" = "subcutaneous"
 )
 
-ROUTE_ALIAS_MAP <- c(
+ROUTE_ALIAS_MAP <- list(
   "oral" = "oral",
   "po" = "oral",
   "per orem" = "oral",
@@ -515,7 +516,7 @@ ROUTE_ALIAS_MAP <- c(
 )
 
 ROUTE_ALIAS_KEYS <- names(ROUTE_ALIAS_MAP)[order(nchar(names(ROUTE_ALIAS_MAP)), decreasing = TRUE)]
-ALLOWED_ROUTE_SET <- sort(unique(c(unname(ROUTE_ALIAS_MAP), FORM_TO_ROUTE_CANONICAL)))
+ALLOWED_ROUTE_SET <- sort(unique(c(unlist(ROUTE_ALIAS_MAP, use.names = FALSE), unlist(FORM_TO_ROUTE_CANONICAL, use.names = FALSE))))
 
 normalize_route_entry <- function(value) {
   if (is.null(value) || is.na(value)) return(character())
@@ -528,7 +529,7 @@ normalize_route_entry <- function(value) {
     }
   }
   parts <- unlist(strsplit(s, "[/|,;]", perl = TRUE), use.names = FALSE)
-  if (!length(parts)) parts <- s
+  if (!length(parts)) parts <- c(s)
   for (part in parts) {
     part_trim <- trimws(part)
     if (!nzchar(part_trim)) next
