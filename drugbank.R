@@ -274,17 +274,18 @@ brands_output <- info_dt[
   {
     brand_vec <- brand_names[[1]]
     if (!length(brand_vec)) {
-      return(NULL)
+      NULL
+    } else {
+      generic_vec <- unique_canonical(generic_parts[[1]])
+      if (!length(generic_vec)) {
+        generic_vec <- combine_values(generic)
+      }
+      generic_str <- if (length(generic_vec)) paste(generic_vec, collapse = "; ") else NA_character_
+      data.table(
+        brand = brand_vec,
+        generic = generic_str
+      )
     }
-    generic_vec <- unique_canonical(generic_parts[[1]])
-    if (!length(generic_vec)) {
-      generic_vec <- combine_values(generic)
-    }
-    generic_str <- if (length(generic_vec)) paste(generic_vec, collapse = "; ") else NA_character_
-    data.table(
-      brand = brand_vec,
-      generic = generic_str
-    )
   },
   by = drugbank_id
 ]
