@@ -24,7 +24,7 @@ get_script_dir <- function() {
 }
 
 # --- deps ---
-ensure_installed(c("data.table", "arrow", "jsonlite"))
+ensure_installed(c("data.table", "arrow"))
 if (!requireNamespace("dbdataset", quietly = TRUE)) {
   ensure_installed("remotes")
   remotes::install_github("interstellar-Consultation-Services/dbdataset", quiet = TRUE, upgrade = "never")
@@ -33,7 +33,6 @@ if (!requireNamespace("dbdataset", quietly = TRUE)) {
 suppressPackageStartupMessages({
   library(data.table)
   library(arrow)
-  library(jsonlite)
   library(dbdataset)
 })
 
@@ -113,9 +112,12 @@ combine_list_column <- function(lst) {
   combine_values(unlist(lst, use.names = FALSE))
 }
 
-to_json_array <- function(values) {
+collapse_pipe <- function(values) {
   values <- combine_values(values)
-  if (!length(values)) "[]" else jsonlite::toJSON(values, auto_unbox = FALSE)
+  if (!length(values)) {
+    return(NA_character_)
+  }
+  paste(values, collapse = "|")
 }
 
 script_dir <- get_script_dir()
@@ -302,10 +304,11 @@ final_dt <- drug_atc[
   by = atc_code
 ]
 
-list_cols <- c("applicable_products", "dose", "form", "route", "drugbank_ids")
-for (col in list_cols) {
-  final_dt[, (col) := vapply(.SD[[1]], to_json_array, character(1)), .SDcols = col]
-}
+final_dt[, applicable_products := vapply(applicable_products, collapse_pipe, character(1))]
+final_dt[, dose := vapply(dose, collapse_pipe, character(1))]
+final_dt[, form := vapply(form, collapse_pipe, character(1))]
+final_dt[, route := vapply(route, collapse_pipe, character(1))]
+final_dt[, drugbank_ids := vapply(drugbank_ids, collapse_pipe, character(1))]
 
 setcolorder(final_dt, c("generic", "applicable_products", "dose", "form", "route", "atc_code", "drugbank_ids"))
 setorder(final_dt, atc_code)
