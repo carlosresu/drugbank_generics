@@ -579,6 +579,51 @@ if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE, showWarnin
 output_generics_path <- file.path(output_dir, "drugbank_generics.csv")
 output_brands_path <- file.path(output_dir, "drugbank_brands.csv")
 
+paths_equal <- function(path_a, path_b) {
+  if (is.null(path_a) || is.null(path_b)) {
+    return(FALSE)
+  }
+  a_norm <- tryCatch(
+    normalizePath(path_a, winslash = "/", mustWork = FALSE),
+    error = function(...) NA_character_
+  )
+  b_norm <- tryCatch(
+    normalizePath(path_b, winslash = "/", mustWork = FALSE),
+    error = function(...) NA_character_
+  )
+  !is.na(a_norm) && !is.na(b_norm) && identical(a_norm, b_norm)
+}
+
+safe_copy <- function(src, dest) {
+  tryCatch({
+    if (!file.exists(src) || paths_equal(src, dest)) {
+      return(FALSE)
+    }
+    dest_dir <- dirname(dest)
+    if (!dir.exists(dest_dir)) {
+      dir.create(dest_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+    if (!dir.exists(dest_dir)) {
+      return(FALSE)
+    }
+    file.copy(src, dest, overwrite = TRUE, copy.mode = TRUE)
+  }, error = function(...) FALSE)
+}
+
+copy_outputs_to_superproject <- function(src_file) {
+  repo_root <- normalizePath(file.path(script_dir, "..", ".."), winslash = "/", mustWork = FALSE)
+  dependencies_dir <- file.path(repo_root, "dependencies")
+  if (!dir.exists(dependencies_dir)) {
+    return(invisible(FALSE))
+  }
+
+  super_output_dir <- file.path(repo_root, "dependencies", "drugbank_generics", "output")
+  safe_copy(src_file, file.path(super_output_dir, basename(src_file)))
+
+  inputs_dir <- file.path(repo_root, "inputs")
+  safe_copy(src_file, file.path(inputs_dir, basename(src_file)))
+}
+
 dataset <- drugbank
 
 excluded_groups <- c("experimental", "withdrawn", "illicit", "vet")
@@ -797,3 +842,5 @@ if (nrow(generics_dt) > 100000) {
 
 write_arrow_csv(generics_dt, output_generics_path)
 write_arrow_csv(brands_output, output_brands_path)
+copy_outputs_to_superproject(output_generics_path)
+copy_outputs_to_superproject(output_brands_path)
