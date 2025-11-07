@@ -620,7 +620,7 @@ copy_outputs_to_superproject <- function(src_file) {
   super_output_dir <- file.path(repo_root, "dependencies", "drugbank_generics", "output")
   safe_copy(src_file, file.path(super_output_dir, basename(src_file)))
 
-  inputs_dir <- file.path(repo_root, "inputs")
+  inputs_dir <- file.path(repo_root, "inputs", "drugs")
   safe_copy(src_file, file.path(inputs_dir, basename(src_file)))
 }
 
