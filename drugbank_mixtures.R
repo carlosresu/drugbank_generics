@@ -27,9 +27,11 @@ if (parallel_enabled) {
   tryCatch({
     ensure_installed("future")
     ensure_installed("future.apply")
+    ensure_installed("future.callr")
     library(future)
     library(future.apply)
-    plan(multisession)
+    workers <- max(1L, future::availableCores() - 1L)
+    plan(future.callr::callr, workers = workers)
     plan_reset <- TRUE
   }, error = function(e) {
     parallel_enabled <<- FALSE
@@ -106,43 +108,19 @@ combine_values <- function(...) {
   unique_canonical(combined)
 }
 
-COMM_SENTINEL <- "\u0001"
-
-protect_parenthetical_commas <- function(text) {
-  if (is.na(text) || !nzchar(text)) return(text)
-  repeat {
-    matches <- gregexpr("\\([^()]*\\)", text, perl = TRUE)
-    replaced <- FALSE
-    regmatches(text, matches) <- lapply(regmatches(text, matches), function(ms) {
-      if (!length(ms)) return(ms)
-      replaced <<- TRUE
-      vapply(ms, function(match) {
-        inner <- if (nchar(match) > 2) substr(match, 2, nchar(match) - 1) else ""
-        inner <- gsub(",", COMM_SENTINEL, inner, fixed = TRUE)
-        paste0("(", inner, ")")
-      }, character(1), USE.NAMES = FALSE)
-    })
-    if (!replaced) break
-  }
-  text
-}
-
-restore_parenthetical_commas <- function(values) {
-  if (is.null(values)) return(values)
-  vals <- values
-  vals[!is.na(vals)] <- gsub(COMM_SENTINEL, ",", vals[!is.na(vals)], fixed = TRUE)
-  vals
-}
-
 split_ingredients <- function(value) {
   val <- collapse_ws(value)
   if (is.na(val) || !nzchar(val)) return(character())
-  val <- protect_parenthetical_commas(val)
-  if (grepl("\\+", val)) {
-    val <- gsub(",[^+\\)]+(?=\\s*\\+)", "", val, perl = TRUE)
+  repeat {
+    new_val <- gsub("\\([^()]*\\)", "", val, perl = TRUE)
+    if (identical(new_val, val)) break
+    val <- new_val
   }
+  if (grepl("\\+", val)) {
+    val <- gsub(",[^+]+(?=\\s*\\+)", "", val, perl = TRUE)
+  }
+  val <- gsub(",[^+]+$", "", val, perl = TRUE)
   parts <- unlist(strsplit(val, "(?i)\\sand\\s|\\swith\\s|\\splus\\s|\\+|/|,|;", perl = TRUE))
-  parts <- restore_parenthetical_commas(parts)
   parts <- collapse_ws(parts)
   parts <- parts[nzchar(parts)]
   unique_canonical(parts)
