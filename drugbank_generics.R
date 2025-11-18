@@ -26,6 +26,29 @@ library(dbdataset)
 
 argv <- commandArgs(trailingOnly = TRUE)
 keep_all_flag <- "--keep-all" %in% argv
+parallel_enabled <- !("--no-parallel" %in% argv)
+
+plan_reset <- NULL
+if (parallel_enabled) {
+  tryCatch({
+    ensure_installed("future")
+    ensure_installed("future.apply")
+    library(future)
+    library(future.apply)
+    plan(multisession)
+    plan_reset <- TRUE
+  }, error = function(e) {
+    parallel_enabled <<- FALSE
+  })
+}
+
+parallel_lapply <- function(x, fun) {
+  if (parallel_enabled) {
+    future.apply::future_lapply(x, fun)
+  } else {
+    lapply(x, fun)
+  }
+}
 
 get_script_dir <- function() {
   cmd_args <- commandArgs(trailingOnly = FALSE)
@@ -557,16 +580,15 @@ salts_dt <- filter_excluded(salts_dt)
 salts_dt <- salts_dt[!is.na(salt_name) & nzchar(salt_name)]
 salts_dt <- salts_dt[, .(salt_names_list = list(unique_canonical(salt_name))), by = drugbank_id]
 
-process_source <- function(dt, route_col, form_col, dose_col) {
+process_source <- function(dt) {
   source_dt <- copy(dt)
-  setnames(source_dt, c(route_col, form_col, dose_col), c("route_raw", "form_raw", "dose_raw"))
   source_dt <- filter_excluded(source_dt)
   source_dt[, route_raw := collapse_ws(route_raw)]
   source_dt[, form_raw := collapse_ws(form_raw)]
   source_dt[, dose_raw := collapse_ws(dose_raw)]
-  source_dt[, route_norm_list := lapply(route_raw, normalize_route_entry)]
-  source_dt[, form_norm := vapply(form_raw, normalize_form_value, character(1))]
-  source_dt[, dose_norm := vapply(dose_raw, normalize_dose_value, character(1))]
+  source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
+  source_dt[, form_norm := unlist(parallel_lapply(as.list(form_raw), normalize_form_value), use.names = FALSE)]
+  source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
   source_dt[form_norm == "", form_norm := NA_character_]
   source_dt[dose_norm == "", dose_norm := NA_character_]
   source_dt
@@ -577,22 +599,25 @@ if (length(dataset$drugs$dosages)) {
   dosages_raw <- as.data.table(dataset$drugs$dosages)[
     , .(drugbank_id = as.character(drugbank_id), route = route, form = form, strength = strength)
   ]
+  setnames(dosages_raw, c("route", "form", "strength"), c("route_raw", "form_raw", "dose_raw"))
 } else {
-  dosages_raw <- data.table(drugbank_id = character(), route = character(), form = character(), strength = character())
+  dosages_raw <- data.table(drugbank_id = character(), route_raw = character(), form_raw = character(), dose_raw = character())
 }
-dosages_proc <- process_source(dosages_raw, "route", "form", "strength")
+dosages_proc <- process_source(dosages_raw)
 
 # products
 if (length(dataset$products)) {
   products_raw <- as.data.table(dataset$products)[
     , .(drugbank_id = as.character(drugbank_id), route = route, form = dosage_form, strength = strength)
   ]
+  setnames(products_raw, c("route", "form", "strength"), c("route_raw", "form_raw", "dose_raw"))
 } else {
-  products_raw <- data.table(drugbank_id = character(), route = character(), form = character(), strength = character())
+  products_raw <- data.table(drugbank_id = character(), route_raw = character(), form_raw = character(), dose_raw = character())
 }
-products_proc <- process_source(products_raw, "route", "form", "strength")
+products_proc <- process_source(products_raw)
 
 combined <- rbindlist(list(dosages_proc, products_proc), fill = TRUE)
+combined[, combo_id := .I]
 combined[, route_norm_list := lapply(route_norm_list, function(x) {
   vals <- unique_canonical(x)
   if (!length(vals)) vals <- NA_character_
@@ -601,15 +626,23 @@ combined[, route_norm_list := lapply(route_norm_list, function(x) {
 
 combo_base <- combined[, {
   routes <- route_norm_list[[1]]
+  if (!length(routes) || all(is.na(routes))) routes <- NA_character_
+  n <- length(routes)
+  raw_route_val <- if (length(route_raw)) route_raw[[1]] else NA_character_
+  form_norm_val <- if (length(form_norm)) form_norm[[1]] else NA_character_
+  raw_form_val <- if (length(raw_form)) raw_form[[1]] else NA_character_
+  dose_norm_val <- if (length(dose_norm)) dose_norm[[1]] else NA_character_
+  raw_dose_val <- if (length(dose_raw)) dose_raw[[1]] else NA_character_
   data.table(
     route_norm = routes,
-    raw_route = route_raw,
-    form_norm = form_norm,
-    raw_form = form_raw,
-    dose_norm = dose_norm,
-    raw_dose = dose_raw
+    raw_route = rep(raw_route_val, n),
+    form_norm = rep(form_norm_val, n),
+    raw_form = rep(raw_form_val, n),
+    dose_norm = rep(dose_norm_val, n),
+    raw_dose = rep(raw_dose_val, n)
   )
-}, by = .(drugbank_id)]
+}, by = .(drugbank_id, combo_id)]
+combo_base[, combo_id := NULL]
 combo_base <- unique(combo_base)
 combo_base <- combo_base[!(is.na(dose_norm) & is.na(form_norm) & is.na(route_norm))]
 
@@ -642,8 +675,12 @@ combo_dt[is.na(lexeme_list), lexeme_list := list(list(canonical_generic_name))]
 
 combo_dt <- merge(combo_dt, salts_dt, by = "drugbank_id", all.x = TRUE)
 combo_dt[is.na(salt_names_list), salt_names_list := list(list(character()))]
+combo_dt[, salt_names := unlist(parallel_lapply(salt_names_list, function(lst) collapse_pipe(expand_salt_set(lst))), use.names = FALSE)]
+combo_dt[, salt_names_list := NULL]
 combo_dt <- merge(combo_dt, groups_clean_dt, by = "drugbank_id", all.x = TRUE)
 combo_dt[is.na(groups_list), groups_list := list(list(character()))]
+combo_dt[, groups := unlist(parallel_lapply(groups_list, collapse_pipe), use.names = FALSE)]
+combo_dt[, groups_list := NULL]
 
 combo_dt <- combo_dt[, {
   lexes <- lexeme_list[[1]]
@@ -651,19 +688,21 @@ combo_dt <- combo_dt[, {
   data.table(lexeme = lexes)
 }, by = .(drugbank_id, canonical_generic_name, generic_components, generic_components_key,
           dose_norm, raw_dose, form_norm, raw_form, route_norm, raw_route, atc_code,
-          salt_names_list, groups_list)]
+          salt_names, groups)]
 
-combo_dt[, dose_synonyms := collapse_pipe(expand_dose_set(dose_norm, raw_dose))]
-combo_dt[, form_synonyms := collapse_pipe(expand_value_set(form_norm, raw_form, FORM_SYNONYM_LOOKUP))]
-combo_dt[, route_synonyms := collapse_pipe(expand_value_set(route_norm, raw_route, ROUTE_SYNONYM_LOOKUP))]
-combo_dt[, salt_names := vapply(salt_names_list, function(lst) collapse_pipe(expand_salt_set(lst)), character(1))]
-combo_dt[, groups := vapply(groups_list, collapse_pipe, character(1))]
+dose_syn_vec <- unlist(parallel_lapply(seq_len(nrow(combo_dt)), function(i) {
+  collapse_pipe(expand_dose_set(combo_dt$dose_norm[i], combo_dt$raw_dose[i]))
+}), use.names = FALSE)
+form_syn_vec <- unlist(parallel_lapply(seq_len(nrow(combo_dt)), function(i) {
+  collapse_pipe(expand_value_set(combo_dt$form_norm[i], combo_dt$raw_form[i], FORM_SYNONYM_LOOKUP))
+}), use.names = FALSE)
+route_syn_vec <- unlist(parallel_lapply(seq_len(nrow(combo_dt)), function(i) {
+  collapse_pipe(expand_value_set(combo_dt$route_norm[i], combo_dt$raw_route[i], ROUTE_SYNONYM_LOOKUP))
+}), use.names = FALSE)
 
-combo_dt[, dose_synonyms := dose_synonyms]
-combo_dt[, form_synonyms := form_synonyms]
-combo_dt[, route_synonyms := route_synonyms]
-combo_dt[, salt_names := salt_names]
-combo_dt[, groups := groups]
+combo_dt[, dose_synonyms := dose_syn_vec]
+combo_dt[, form_synonyms := form_syn_vec]
+combo_dt[, route_synonyms := route_syn_vec]
 
 final_dt <- combo_dt[, .(
   drugbank_id,
@@ -708,3 +747,7 @@ copy_outputs_to_superproject(output_master_path)
 cat(sprintf("Wrote %d rows to %s\n", nrow(final_dt), output_master_path))
 cat("Sample rows:\n")
 print(head(final_dt, 5))
+
+if (!is.null(plan_reset)) {
+  try(future::plan(future::sequential), silent = TRUE)
+}
