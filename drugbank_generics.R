@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 # drugbank_generics.R — build a generics-focused DrugBank master dataset
 # Columns: drugbank_id, generic_name, generic_components, generic_components_key,
-#          synonyms, normalized_doses, raw_doses, normalized_forms, raw_forms,
-#          normalized_routes, raw_routes, salt_names, atc_codes, groups
+#          synonyms, dose_synonyms, raw_doses, form_synonyms, raw_forms,
+#          route_synonyms, raw_routes, salt_names, atc_codes, groups
 # Only veterinary-only drugs are excluded; all other groups remain.
 
 suppressWarnings({
@@ -102,106 +102,393 @@ collapse_pipe <- function(values) {
   paste(vals, collapse = "|")
 }
 
-clean_numeric_string <- function(x) {
-  tolower(gsub(",", "", collapse_ws(x)))
+clean_numeric_string <- function(value) {
+  if (is.null(value) || is.na(value)) return(NA_character_)
+  s <- as.character(value)
+  s <- gsub("([0-9]),([0-9])", "\\1.\\2", s, perl = TRUE)
+  s <- gsub(",", "", s, fixed = TRUE)
+  tolower(trimws(s))
 }
 
-extract_numeric <- function(x) {
-  num <- suppressWarnings(as.numeric(x))
-  ifelse(is.na(num), NA_real_, num)
+extract_numeric <- function(value) {
+  s <- clean_numeric_string(value)
+  if (is.na(s)) return(NA_real_)
+  suppressWarnings(as.numeric(s))
 }
 
 mass_to_mg <- function(value, unit) {
   if (is.na(value) || is.na(unit)) return(NA_real_)
-  switch(unit,
+  u <- tolower(trimws(unit))
+  switch(u,
          "mg" = value,
          "g" = value * 1000,
          "mcg" = value / 1000,
-         "µg" = value / 1000,
          "ug" = value / 1000,
+         "µg" = value / 1000,
          "kg" = value * 1e6,
          value)
 }
 
 format_numeric <- function(x) {
   if (is.na(x)) return(NA_character_)
-  if (abs(x - round(x)) < 1e-9) {
-    sprintf("%d", as.integer(round(x)))
-  } else {
-    format(round(x, 3), trim = TRUE, scientific = FALSE)
-  }
+  out <- sprintf("%.6f", x)
+  out <- sub("0+$", "", out, perl = TRUE)
+  out <- sub("\\.$", "", out, perl = TRUE)
+  if (identical(out, "-0")) out <- "0"
+  out
+}
+
+PER_UNIT_MAP <- list(
+  "ml" = "ml",
+  "l" = "l",
+  "tab" = "tablet",
+  "tabs" = "tablet",
+  "tablet" = "tablet",
+  "tablets" = "tablet",
+  "chewing gum" = "tablet",
+  "cap" = "capsule",
+  "caps" = "capsule",
+  "capsule" = "capsule",
+  "capsules" = "capsule",
+  "sachet" = "sachet",
+  "sachets" = "sachet",
+  "drop" = "drop",
+  "drops" = "drop",
+  "gtt" = "drop",
+  "actuation" = "actuation",
+  "actuations" = "actuation",
+  "spray" = "spray",
+  "sprays" = "spray",
+  "puff" = "puff",
+  "puffs" = "puff",
+  "dose" = "dose",
+  "doses" = "dose",
+  "application" = "application",
+  "applications" = "application",
+  "ampule" = "ampule",
+  "ampules" = "ampule",
+  "ampoule" = "ampule",
+  "ampoules" = "ampule",
+  "amp" = "ampule",
+  "vial" = "vial",
+  "vials" = "vial"
+)
+
+normalize_per_unit <- function(unit) {
+  if (is.null(unit)) return(NA_character_)
+  u <- tolower(trimws(unit))
+  if (!nzchar(u)) return(NA_character_)
+  u <- gsub("\\s+", " ", u, perl = TRUE)
+  mapped <- PER_UNIT_MAP[[u]]
+  if (!is.null(mapped)) return(mapped)
+  mapped <- PER_UNIT_MAP[[sub("s$", "", u)]]
+  if (!is.null(mapped)) return(mapped)
+  u
 }
 
 normalize_dose_value <- function(value) {
-  val <- clean_numeric_string(value)
-  if (is.na(val) || !nzchar(val)) return(NA_character_)
-  pattern <- "^([0-9]+(?:\\.[0-9]+)?)\\s*(mg|g|mcg|ug|µg|kg)(?:\\s*/\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(ml|l))?$"
-  if (!grepl(pattern, val, perl = TRUE)) return(val)
-  match <- regexec(pattern, val, perl = TRUE)
-  pieces <- regmatches(val, match)[[1]]
-  dose_val <- mass_to_mg(extract_numeric(pieces[2]), pieces[3])
-  dose_fmt <- format_numeric(dose_val)
-  if (length(pieces) >= 5 && nzchar(pieces[4])) {
-    per_val <- extract_numeric(pieces[4])
-    per_unit <- pieces[5]
-    per_norm <- ifelse(per_unit == "l", per_val * 1000, per_val)
-    per_fmt <- format_numeric(per_norm)
-    paste0(dose_fmt, " mg/", per_fmt, " mL")
-  } else {
-    paste0(dose_fmt, " mg")
+  if (is.null(value) || is.na(value)) return(NA_character_)
+  original <- collapse_ws(value)
+  if (!nzchar(original)) return(NA_character_)
+  s <- tolower(original)
+  s <- gsub("µ|μ|\u00b5", "mcg", s)
+  s <- gsub("microgram", "mcg", s)
+  s <- gsub("milligram", "mg", s)
+  s <- gsub("millilitre|milliliter", "ml", s)
+  s <- gsub("litre|liter", "l", s)
+  s <- gsub("cc", "ml", s, fixed = TRUE)
+  s <- gsub("\\s+", " ", s, perl = TRUE)
+  s <- trimws(s)
+  if (!nzchar(s)) return(NA_character_)
+
+  pct_match <- regexec("^([0-9]+(?:\\.[0-9]+)?)\\s*%$", s, perl = TRUE)
+  pct_groups <- regmatches(s, pct_match)[[1]]
+  if (length(pct_groups)) {
+    pct_val <- extract_numeric(pct_groups[2])
+    pct_str <- format_numeric(pct_val)
+    if (!is.na(pct_str)) return(paste0(pct_str, "%"))
   }
+
+  ratio_ml_match <- regexec("([0-9]+(?:\\.[0-9]+)?)\\s*(mg|g|mcg|ug)\\s*(?:/|\\s+per\\s+)\\s*([0-9]+(?:\\.[0-9]+)?)?\\s*(ml|l)\\b", s, perl = TRUE)
+  ratio_ml_groups <- regmatches(s, ratio_ml_match)[[1]]
+  if (length(ratio_ml_groups)) {
+    strength_val <- extract_numeric(ratio_ml_groups[2])
+    unit_val <- ratio_ml_groups[3]
+    per_val <- ratio_ml_groups[4]
+    per_val_num <- if (nzchar(per_val)) extract_numeric(per_val) else 1
+    per_unit_val <- ratio_ml_groups[5]
+    if (!is.na(per_val_num) && per_val_num > 0) {
+      if (per_unit_val == "l") per_val_num <- per_val_num * 1000
+      mg_val <- mass_to_mg(strength_val, unit_val)
+      if (!is.na(mg_val)) {
+        ratio_val <- mg_val / per_val_num
+        ratio_str <- format_numeric(ratio_val)
+        if (!is.na(ratio_str)) return(paste0(ratio_str, "mg/ml"))
+      }
+    }
+  }
+
+  per_unit_pattern <- "(tab(?:let)?s?|caps?(?:ule)?s?|sachets?|drops?|gtt|actuations?|sprays?|puffs?|doses?|applications?|ampoules?|ampules?|vials?)"
+  ratio_unit_match <- regexec(
+    paste0("([0-9]+(?:\\.[0-9]+)?)\\s*(mg|g|mcg|ug|iu)\\s*(?:/|\\s+per\\s+)\\s*([0-9]+(?:\\.[0-9]+)?)?\\s*(", per_unit_pattern, ")\\b"),
+    s,
+    perl = TRUE
+  )
+  ratio_unit_groups <- regmatches(s, ratio_unit_match)[[1]]
+  if (length(ratio_unit_groups)) {
+    strength_val <- extract_numeric(ratio_unit_groups[2])
+    unit_val <- ratio_unit_groups[3]
+    per_val <- ratio_unit_groups[4]
+    per_val_num <- if (nzchar(per_val)) extract_numeric(per_val) else 1
+    per_unit_val <- normalize_per_unit(ratio_unit_groups[5])
+    if (!is.na(per_val_num) && !is.na(per_unit_val) && nzchar(per_unit_val)) {
+      mg_val <- if (unit_val %chin% c("mg", "g", "mcg", "ug")) mass_to_mg(strength_val, unit_val) else NA_real_
+      num_str <- if (!is.na(mg_val)) paste0(format_numeric(mg_val), "mg") else {
+        amt_str <- format_numeric(strength_val)
+        if (is.na(amt_str)) return(original)
+        paste0(amt_str, unit_val)
+      }
+      per_part <- if (is.na(per_val_num) || per_val_num == 1) {
+        per_unit_val
+      } else {
+        per_val_str <- format_numeric(per_val_num)
+        if (is.na(per_val_str)) return(original)
+        paste0(per_val_str, per_unit_val)
+      }
+      if (nzchar(num_str) && nzchar(per_part)) return(paste0(num_str, "/", per_part))
+    }
+  }
+
+  amount_match <- regexec("([0-9]+(?:\\.[0-9]+)?)\\s*(mg|g|mcg|ug|iu)\\b", s, perl = TRUE)
+  amount_groups <- regmatches(s, amount_match)[[1]]
+  if (length(amount_groups)) {
+    strength_val <- extract_numeric(amount_groups[2])
+    unit_val <- amount_groups[3]
+    if (unit_val %chin% c("mg", "g", "mcg", "ug")) {
+      mg_val <- mass_to_mg(strength_val, unit_val)
+      mg_str <- format_numeric(mg_val)
+      if (!is.na(mg_str)) return(paste0(mg_str, "mg"))
+    } else {
+      amt_str <- format_numeric(strength_val)
+      if (!is.na(amt_str)) return(paste0(amt_str, unit_val))
+    }
+  }
+
+  volume_match <- regexec("([0-9]+(?:\\.[0-9]+)?)\\s*(ml|l)\\b", s, perl = TRUE)
+  volume_groups <- regmatches(s, volume_match)[[1]]
+  if (length(volume_groups)) {
+    vol_val <- extract_numeric(volume_groups[2])
+    vol_unit <- volume_groups[3]
+    if (vol_unit == "l") vol_val <- vol_val * 1000
+    vol_str <- format_numeric(vol_val)
+    if (!is.na(vol_str)) return(paste0(vol_str, "ml"))
+  }
+
+  gsub("\\s+", " ", tolower(original), perl = TRUE)
 }
 
 normalize_dose_vector <- function(values) {
-  unique_canonical(na.omit(sapply(values, normalize_dose_value, USE.NAMES = FALSE)))
+  if (is.null(values) || !length(values)) return(character())
+  out <- unlist(lapply(values, function(v) {
+    norm <- normalize_dose_value(v)
+    if (is.null(norm) || is.na(norm) || !nzchar(norm)) return(character())
+    norm
+  }), use.names = FALSE)
+  if (!length(out)) return(character())
+  unique_canonical(out)
 }
 
-FORM_CANONICAL_MAP <- c(
-  "tabs" = "tablet",
+build_inverse_map <- function(map) {
+  inv <- list()
+  for (key in names(map)) {
+    canon <- map[[key]]
+    inv[[canon]] <- unique_canonical(c(inv[[canon]], canon, key))
+  }
+  inv
+}
+
+FORM_CANONICAL_MAP <- list(
   "tab" = "tablet",
+  "tabs" = "tablet",
+  "tablet" = "tablet",
   "tablets" = "tablet",
-  "caps" = "capsule",
+  "chewing gum" = "tablet",
   "cap" = "capsule",
+  "caps" = "capsule",
+  "capsule" = "capsule",
+  "capsulee" = "capsule",
   "capsules" = "capsule",
-  "sol" = "solution",
   "susp" = "suspension",
+  "suspension" = "suspension",
+  "syr" = "syrup",
+  "syrup" = "syrup",
+  "sol" = "solution",
+  "soln" = "solution",
+  "solution" = "solution",
+  "inhal.solution" = "solution",
+  "instill.solution" = "solution",
+  "lamella" = "solution",
+  "ointment" = "ointment",
+  "oint" = "ointment",
+  "gel" = "gel",
+  "cream" = "cream",
+  "lotion" = "lotion",
+  "patch" = "patch",
+  "supp" = "suppository",
+  "suppository" = "suppository",
+  "dpi" = "dpi",
+  "inhal.powder" = "dpi",
+  "mdi" = "mdi",
+  "inhal.aerosol" = "mdi",
+  "oral aerosol" = "mdi",
+  "ampu" = "ampule",
+  "ampul" = "ampule",
+  "ampule" = "ampule",
+  "ampoule" = "ampule",
+  "amp" = "ampule",
+  "vial" = "vial",
   "inj" = "injection",
-  "liq" = "solution",
-  "liquid" = "solution"
+  "injection" = "injection",
+  "implant" = "solution",
+  "s.c. implant" = "solution",
+  "metered dose inhaler" = "mdi",
+  "dry powder inhaler" = "dpi",
+  "spray" = "spray",
+  "nasal spray" = "spray",
+  "nebule" = "solution",
+  "neb" = "solution",
+  "inhaler" = "mdi"
 )
 
+FORM_CANONICAL_KEYS <- names(FORM_CANONICAL_MAP)[order(nchar(names(FORM_CANONICAL_MAP)), decreasing = TRUE)]
+FORM_CANONICAL_VALUES <- unique(unlist(FORM_CANONICAL_MAP, use.names = FALSE))
+RELEASE_PATTERN <- "(extended(?:-|\u0020)?release|immediate(?:-|\u0020)?release|delayed(?:-|\u0020)?release|sustained(?:-|\u0020)?release|controlled(?:-|\u0020)?release)"
+FORM_SYNONYM_LOOKUP <- build_inverse_map(FORM_CANONICAL_MAP)
+
 normalize_form_value <- function(value) {
-  val <- tolower(collapse_ws(value))
-  if (is.na(val) || !nzchar(val)) return(NA_character_)
-  FORM_CANONICAL_MAP[[val]] %||% val
+  if (is.null(value) || is.na(value)) return(NA_character_)
+  s <- tolower(collapse_ws(value))
+  if (!nzchar(s)) return(NA_character_)
+  release_match <- regexpr(RELEASE_PATTERN, s, perl = TRUE)
+  release_suffix <- ""
+  if (release_match[1] > -1) {
+    release_suffix <- regmatches(s, list(release_match))[[1]]
+    release_suffix <- gsub("-", " ", release_suffix, fixed = TRUE)
+    s <- trimws(sub(RELEASE_PATTERN, "", s, perl = TRUE))
+  }
+  base_part <- strsplit(s, "[,;/]", perl = TRUE)[[1]]
+  base_token <- if (length(base_part)) trimws(base_part[1]) else s
+  canonical <- if (base_token %chin% names(FORM_CANONICAL_MAP)) FORM_CANONICAL_MAP[[base_token]] else NULL
+  if (is.null(canonical)) {
+    for (key in FORM_CANONICAL_KEYS) {
+      if (grepl(paste0("\\b", key, "\\b"), base_token, perl = TRUE)) {
+        canonical <- FORM_CANONICAL_MAP[[key]]
+        break
+      }
+    }
+  }
+  if (is.null(canonical)) {
+    for (value_candidate in FORM_CANONICAL_VALUES) {
+      if (grepl(paste0("\\b", value_candidate, "\\b"), base_token, perl = TRUE)) {
+        canonical <- value_candidate
+        break
+      }
+    }
+  }
+  if (is.null(canonical) || !nzchar(canonical)) {
+    canonical <- base_token
+  }
+  canonical <- trimws(gsub("\\s+", " ", canonical, perl = TRUE))
+  if (nzchar(release_suffix)) {
+    suffix <- trimws(gsub("\\s+", " ", release_suffix, perl = TRUE))
+    return(paste0(canonical, ", ", suffix))
+  }
+  canonical
 }
 
 `%||%` <- function(a, b) if (!is.null(a) && !is.na(a)) a else b
 
 normalize_form_vector <- function(values) {
-  unique_canonical(na.omit(sapply(values, normalize_form_value, USE.NAMES = FALSE)))
+  if (is.null(values) || !length(values)) return(character())
+  out <- unlist(lapply(values, function(v) {
+    norm <- normalize_form_value(v)
+    if (is.null(norm) || is.na(norm) || !nzchar(norm)) return(character())
+    norm
+  }), use.names = FALSE)
+  if (!length(out)) return(character())
+  unique_canonical(out)
 }
 
-ROUTE_ALIAS_MAP <- c(
+ROUTE_ALIAS_MAP <- list(
+  "oral" = "oral",
   "po" = "oral",
+  "per orem" = "oral",
   "per os" = "oral",
   "by mouth" = "oral",
   "iv" = "intravenous",
+  "intravenous" = "intravenous",
   "im" = "intramuscular",
+  "intramuscular" = "intramuscular",
   "sc" = "subcutaneous",
   "subcut" = "subcutaneous",
-  "subling" = "sublingual",
-  "sl" = "sublingual"
+  "subcutaneous" = "subcutaneous",
+  "subdermal" = "subcutaneous",
+  "sl" = "sublingual",
+  "sublingual" = "sublingual",
+  "bucc" = "buccal",
+  "buccal" = "buccal",
+  "topical" = "topical",
+  "cutaneous" = "topical",
+  "dermal" = "transdermal",
+  "oph" = "ophthalmic",
+  "eye" = "ophthalmic",
+  "ophthalmic" = "ophthalmic",
+  "otic" = "otic",
+  "ear" = "otic",
+  "inh" = "inhalation",
+  "neb" = "inhalation",
+  "inhalation" = "inhalation",
+  "inhaler" = "inhalation",
+  "rectal" = "rectal",
+  "per rectum" = "rectal",
+  "pr" = "rectal",
+  "vaginal" = "vaginal",
+  "per vaginam" = "vaginal",
+  "pv" = "vaginal",
+  "intrathecal" = "intrathecal",
+  "nasal" = "nasal",
+  "per nasal" = "nasal",
+  "intranasal" = "nasal",
+  "td" = "transdermal",
+  "transdermal" = "transdermal",
+  "intradermal" = "intradermal",
+  "id" = "intradermal",
+  "urethral" = "urethral",
+  "intravesical" = "intravesical",
+  "s.c. implant" = "subcutaneous"
 )
+ROUTE_SYNONYM_LOOKUP <- build_inverse_map(ROUTE_ALIAS_MAP)
 
 normalize_route_entry <- function(value) {
-  val <- tolower(collapse_ws(value))
-  if (is.na(val) || !nzchar(val)) return(NA_character_)
-  ROUTE_ALIAS_MAP[[val]] %||% val
+  if (is.null(value) || is.na(value)) return(character())
+  s <- tolower(collapse_ws(value))
+  if (!nzchar(s)) return(character())
+  parts <- unique(trimws(unlist(strsplit(s, "[/|,;]", perl = TRUE), use.names = FALSE)))
+  parts <- parts[nzchar(parts)]
+  suggestions <- character()
+  for (part in parts) {
+    if (!is.null(ROUTE_ALIAS_MAP[[part]])) {
+      suggestions <- c(suggestions, ROUTE_ALIAS_MAP[[part]])
+    }
+  }
+  unique(suggestions)
 }
 
 normalize_route_vector <- function(values) {
-  unique_canonical(na.omit(sapply(values, normalize_route_entry, USE.NAMES = FALSE)))
+  if (is.null(values) || !length(values)) return(character())
+  out <- unlist(lapply(values, normalize_route_entry), use.names = FALSE)
+  if (!length(out)) return(character())
+  unique_canonical(out)
 }
 
 normalize_list_column <- function(values) {
@@ -345,13 +632,13 @@ final_dt[, generic_components := sapply(generic_components_vec, function(vec) {
 })]
 
 final_dt[, synonyms := sapply(synonyms_list, collapse_pipe)]
-final_dt[, normalized_doses := sapply(normalized_doses_list, collapse_pipe)]
+final_dt[, dose_synonyms := sapply(seq_len(.N), function(i) collapse_pipe(expand_dose_set(normalized_doses_list[[i]], raw_doses_list[[i]])))]
 final_dt[, raw_doses := sapply(raw_doses_list, collapse_pipe)]
-final_dt[, normalized_forms := sapply(normalized_forms_list, collapse_pipe)]
+final_dt[, form_synonyms := sapply(seq_len(.N), function(i) collapse_pipe(expand_value_set(normalized_forms_list[[i]], raw_forms_list[[i]], FORM_SYNONYM_LOOKUP)))]
 final_dt[, raw_forms := sapply(raw_forms_list, collapse_pipe)]
-final_dt[, normalized_routes := sapply(normalized_routes_list, collapse_pipe)]
+final_dt[, route_synonyms := sapply(seq_len(.N), function(i) collapse_pipe(expand_value_set(normalized_routes_list[[i]], raw_routes_list[[i]], ROUTE_SYNONYM_LOOKUP)))]
 final_dt[, raw_routes := sapply(raw_routes_list, collapse_pipe)]
-final_dt[, salt_names := sapply(salt_names_list, collapse_pipe)]
+final_dt[, salt_names := sapply(seq_len(.N), function(i) collapse_pipe(expand_salt_set(salt_names_list[[i]])))]
 final_dt[, atc_codes := sapply(atc_codes_list, collapse_pipe)]
 final_dt[, groups := sapply(groups_list, collapse_pipe)]
 
@@ -361,11 +648,11 @@ final_dt <- final_dt[, .(
   generic_components,
   generic_components_key,
   synonyms,
-  normalized_doses,
+  dose_synonyms,
   raw_doses,
-  normalized_forms,
+  form_synonyms,
   raw_forms,
-  normalized_routes,
+  route_synonyms,
   raw_routes,
   salt_names,
   atc_codes,
@@ -388,3 +675,55 @@ copy_outputs_to_superproject(output_master_path)
 cat(sprintf("Wrote %d rows to %s\n", nrow(final_dt), output_master_path))
 cat("Sample rows:\n")
 print(head(final_dt, 5))
+PER_UNIT_SYNONYM_LOOKUP <- build_inverse_map(PER_UNIT_MAP)
+
+expand_value_set <- function(primary, raw_values, lookup) {
+  values <- combine_values(primary, raw_values)
+  if (!length(primary)) return(values)
+  for (val in primary) {
+    if (!is.null(lookup[[val]])) {
+      values <- c(values, lookup[[val]])
+    }
+  }
+  unique_canonical(values)
+}
+
+expand_dose_set <- function(primary, raw_values) {
+  values <- combine_values(primary, raw_values)
+  for (val in primary) {
+    if (!nzchar(val)) next
+    if (grepl("/", val, fixed = TRUE)) {
+      parts <- strsplit(val, "/", fixed = TRUE)[[1]]
+      if (length(parts) == 2) {
+        base <- parts[1]
+        per_part <- trimws(parts[2])
+        syns <- PER_UNIT_SYNONYM_LOOKUP[[per_part]]
+        if (!is.null(syns)) {
+          values <- c(values, paste0(base, "/", syns))
+        }
+      }
+    }
+  }
+  unique_canonical(values)
+}
+
+SALT_SYNONYM_LOOKUP <- list(
+  "hydrochloride" = c("hydrochloride", "hydrochlorid", "hcl"),
+  "sodium" = c("sodium", "na"),
+  "potassium" = c("potassium", "k"),
+  "calcium" = c("calcium", "ca"),
+  "sulfate" = c("sulfate", "sulphate"),
+  "sulphate" = c("sulphate", "sulfate")
+)
+
+expand_salt_set <- function(values) {
+  expanded <- values
+  for (val in values) {
+    key <- tolower(trimws(val))
+    if (!nzchar(key)) next
+    if (!is.null(SALT_SYNONYM_LOOKUP[[key]])) {
+      expanded <- c(expanded, SALT_SYNONYM_LOOKUP[[key]])
+    }
+  }
+  unique_canonical(expanded)
+}
