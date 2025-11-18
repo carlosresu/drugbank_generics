@@ -24,6 +24,9 @@ tryCatch({
 library(data.table)
 library(dbdataset)
 
+argv <- commandArgs(trailingOnly = TRUE)
+keep_all_flag <- "--keep-all" %in% argv
+
 get_script_dir <- function() {
   cmd_args <- commandArgs(trailingOnly = FALSE)
   needle <- "--file="
@@ -79,6 +82,15 @@ combine_values <- function(...) {
   inputs <- list(...)
   combined <- unlist(inputs, use.names = FALSE)
   unique_canonical(combined)
+}
+
+build_inverse_map <- function(map) {
+  inv <- list()
+  for (key in names(map)) {
+    canon <- map[[key]]
+    inv[[canon]] <- unique_canonical(c(inv[[canon]], canon, key))
+  }
+  inv
 }
 
 split_ingredients <- function(value) {
@@ -491,6 +503,59 @@ normalize_route_vector <- function(values) {
   unique_canonical(out)
 }
 
+PER_UNIT_SYNONYM_LOOKUP <- build_inverse_map(PER_UNIT_MAP)
+
+expand_value_set <- function(primary, raw_values, lookup) {
+  values <- combine_values(primary, raw_values)
+  if (!length(primary)) return(values)
+  for (val in primary) {
+    if (!is.null(lookup[[val]])) {
+      values <- c(values, lookup[[val]])
+    }
+  }
+  unique_canonical(values)
+}
+
+expand_dose_set <- function(primary, raw_values) {
+  values <- combine_values(primary, raw_values)
+  for (val in primary) {
+    if (!nzchar(val)) next
+    if (grepl("/", val, fixed = TRUE)) {
+      parts <- strsplit(val, "/", fixed = TRUE)[[1]]
+      if (length(parts) == 2) {
+        base <- parts[1]
+        per_part <- trimws(parts[2])
+        syns <- PER_UNIT_SYNONYM_LOOKUP[[per_part]]
+        if (!is.null(syns)) {
+          values <- c(values, paste0(base, "/", syns))
+        }
+      }
+    }
+  }
+  unique_canonical(values)
+}
+
+SALT_SYNONYM_LOOKUP <- list(
+  "hydrochloride" = c("hydrochloride", "hydrochlorid", "hcl"),
+  "sodium" = c("sodium", "na"),
+  "potassium" = c("potassium", "k"),
+  "calcium" = c("calcium", "ca"),
+  "sulfate" = c("sulfate", "sulphate"),
+  "sulphate" = c("sulphate", "sulfate")
+)
+
+expand_salt_set <- function(values) {
+  expanded <- values
+  for (val in values) {
+    key <- tolower(trimws(val))
+    if (!nzchar(key)) next
+    if (!is.null(SALT_SYNONYM_LOOKUP[[key]])) {
+      expanded <- c(expanded, SALT_SYNONYM_LOOKUP[[key]])
+    }
+  }
+  unique_canonical(expanded)
+}
+
 normalize_list_column <- function(values) {
   if (is.null(values) || !length(values)) return(list(character()))
   list(unique_canonical(values))
@@ -527,10 +592,19 @@ general_dt <- general_dt[!is.na(generic_name) & nzchar(generic_name)]
 general_dt[, generic_components := lapply(generic_name, split_ingredients)]
 
 syn_dt <- as.data.table(dataset$drugs$synonyms)[
-  , .(drugbank_id = as.character(drugbank_id), synonym = collapse_ws(synonym))
+  , .(
+    drugbank_id = as.character(drugbank_id),
+    synonym = collapse_ws(synonym),
+    language = tolower(trimws(language)),
+    coder = tolower(trimws(coder))
+  )
 ]
 syn_dt <- filter_excluded(syn_dt)
-syn_dt <- syn_dt[!is.na(synonym) & nzchar(synonym)]
+syn_dt <- syn_dt[
+  !is.na(synonym) & nzchar(synonym) &
+    !is.na(language) & grepl("english", language, fixed = TRUE) &
+    !is.na(coder) & coder %chin% c("inn", "ban", "usan", "jan", "usp")
+]
 syn_dt <- syn_dt[, .(synonyms_list = list(unique_canonical(synonym))), by = drugbank_id]
 
 atc_dt <- as.data.table(dataset$drugs$atc_codes)[
@@ -642,6 +716,13 @@ final_dt[, salt_names := sapply(seq_len(.N), function(i) collapse_pipe(expand_sa
 final_dt[, atc_codes := sapply(atc_codes_list, collapse_pipe)]
 final_dt[, groups := sapply(groups_list, collapse_pipe)]
 
+if (!keep_all_flag) {
+  final_dt[, approved_flag := grepl("approved", groups, ignore.case = TRUE)]
+  final_dt[, atc_flag := !is.na(atc_codes) & nzchar(trimws(atc_codes))]
+  final_dt <- final_dt[approved_flag | atc_flag]
+  final_dt[, c("approved_flag", "atc_flag") := NULL]
+}
+
 final_dt <- final_dt[, .(
   drugbank_id,
   generic_name,
@@ -675,55 +756,3 @@ copy_outputs_to_superproject(output_master_path)
 cat(sprintf("Wrote %d rows to %s\n", nrow(final_dt), output_master_path))
 cat("Sample rows:\n")
 print(head(final_dt, 5))
-PER_UNIT_SYNONYM_LOOKUP <- build_inverse_map(PER_UNIT_MAP)
-
-expand_value_set <- function(primary, raw_values, lookup) {
-  values <- combine_values(primary, raw_values)
-  if (!length(primary)) return(values)
-  for (val in primary) {
-    if (!is.null(lookup[[val]])) {
-      values <- c(values, lookup[[val]])
-    }
-  }
-  unique_canonical(values)
-}
-
-expand_dose_set <- function(primary, raw_values) {
-  values <- combine_values(primary, raw_values)
-  for (val in primary) {
-    if (!nzchar(val)) next
-    if (grepl("/", val, fixed = TRUE)) {
-      parts <- strsplit(val, "/", fixed = TRUE)[[1]]
-      if (length(parts) == 2) {
-        base <- parts[1]
-        per_part <- trimws(parts[2])
-        syns <- PER_UNIT_SYNONYM_LOOKUP[[per_part]]
-        if (!is.null(syns)) {
-          values <- c(values, paste0(base, "/", syns))
-        }
-      }
-    }
-  }
-  unique_canonical(values)
-}
-
-SALT_SYNONYM_LOOKUP <- list(
-  "hydrochloride" = c("hydrochloride", "hydrochlorid", "hcl"),
-  "sodium" = c("sodium", "na"),
-  "potassium" = c("potassium", "k"),
-  "calcium" = c("calcium", "ca"),
-  "sulfate" = c("sulfate", "sulphate"),
-  "sulphate" = c("sulphate", "sulfate")
-)
-
-expand_salt_set <- function(values) {
-  expanded <- values
-  for (val in values) {
-    key <- tolower(trimws(val))
-    if (!nzchar(key)) next
-    if (!is.null(SALT_SYNONYM_LOOKUP[[key]])) {
-      expanded <- c(expanded, SALT_SYNONYM_LOOKUP[[key]])
-    }
-  }
-  unique_canonical(expanded)
-}
