@@ -630,7 +630,7 @@ combo_base <- combined[, {
   n <- length(routes)
   raw_route_val <- if (length(route_raw)) route_raw[[1]] else NA_character_
   form_norm_val <- if (length(form_norm)) form_norm[[1]] else NA_character_
-  raw_form_val <- if (length(raw_form)) raw_form[[1]] else NA_character_
+  raw_form_val <- if (length(form_raw)) form_raw[[1]] else NA_character_
   dose_norm_val <- if (length(dose_norm)) dose_norm[[1]] else NA_character_
   raw_dose_val <- if (length(dose_raw)) dose_raw[[1]] else NA_character_
   data.table(
