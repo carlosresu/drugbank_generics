@@ -97,10 +97,13 @@ safe_copy <- function(src, dest) {
 copy_outputs_to_superproject <- function(output_path) {
   script_dir <- get_script_dir()
   super_root <- normalizePath(file.path(script_dir, "..", ".."))
-  dest1 <- file.path(super_root, "dependencies", "drugbank_generics", "output", basename(output_path))
-  dest2 <- file.path(super_root, "inputs", "drugs", "drugbank_generics_master.csv")
-  safe_copy(output_path, dest1)
-  safe_copy(output_path, dest2)
+  dests <- list(
+    file.path(super_root, "dependencies", "drugbank_generics", "output", basename(output_path)),
+    file.path(super_root, "inputs", "drugs", basename(output_path))
+  )
+  for (dest in dests) {
+    safe_copy(output_path, dest)
+  }
 }
 
 collapse_ws <- function(x) {
