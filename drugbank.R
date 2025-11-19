@@ -5,6 +5,9 @@
 # - drugbank_brands.csv: brand, generic
 # =================================
 
+cat("DrugBank aggregation script is temporarily deprecated. Existing outputs will be reused.\n")
+quit(save = "no", status = 0)
+
 ensure_installed <- function(packages, repos = "https://cloud.r-project.org") {
   for (pkg in packages) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
