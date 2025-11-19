@@ -14,11 +14,47 @@ get_script_dir <- function() {
   getwd()
 }
 
-run_subscript <- function(script_path) {
+paths_equal <- function(a, b) {
+  normalizePath(a, mustWork = FALSE) == normalizePath(b, mustWork = FALSE)
+}
+
+safe_copy <- function(src, dest) {
+  if (!file.exists(src)) return(invisible(FALSE))
+  if (paths_equal(src, dest)) return(invisible(TRUE))
+  dest_dir <- dirname(dest)
+  if (!dir.exists(dest_dir)) dir.create(dest_dir, recursive = TRUE, showWarnings = FALSE)
+  file.copy(src, dest, overwrite = TRUE, copy.mode = TRUE)
+  invisible(TRUE)
+}
+
+propagate_outputs <- function(script_dir) {
+  repo_root <- normalizePath(file.path(script_dir, "..", ".."))
+  inputs_dir <- file.path(repo_root, "inputs", "drugs")
+  output_dir <- file.path(script_dir, "output")
+
+  generics_master <- file.path(output_dir, "drugbank_generics_master.csv")
+  if (file.exists(generics_master)) {
+    dests <- c(
+      file.path(output_dir, "drugbank_generics.csv"),
+      file.path(inputs_dir, "drugbank_generics.csv"),
+      file.path(inputs_dir, "drugbank_generics_master.csv")
+    )
+    for (dest in dests) {
+      safe_copy(generics_master, dest)
+    }
+  }
+
+  mixtures_master <- file.path(output_dir, "drugbank_mixtures_master.csv")
+  if (file.exists(mixtures_master)) {
+    safe_copy(mixtures_master, file.path(inputs_dir, "drugbank_mixtures_master.csv"))
+  }
+}
+
+run_subscript <- function(script_path, env_vars = character()) {
   if (!file.exists(script_path)) {
     stop(sprintf("Required script not found: %s", script_path))
   }
-  status <- system2("Rscript", c(script_path))
+  status <- system2("Rscript", c(script_path), env = env_vars)
   if (!is.null(status) && status != 0) {
     stop(sprintf("Script %s exited with status %s", script_path, status))
   }
@@ -26,11 +62,14 @@ run_subscript <- function(script_path) {
 
 script_dir <- get_script_dir()
 subscripts <- c("drugbank_generics.R", "drugbank_mixtures.R")
+env_forward <- sprintf("ESOA_DRUGBANK_QUIET=%s", Sys.getenv("ESOA_DRUGBANK_QUIET", unset = "0"))
 
 for (script in subscripts) {
   full_path <- file.path(script_dir, script)
   message(sprintf("[drugbank_all] Running %s", full_path))
-  run_subscript(full_path)
+  run_subscript(full_path, env_vars = env_forward)
 }
+
+propagate_outputs(script_dir)
 
 cat("DrugBank exports completed successfully.\n")

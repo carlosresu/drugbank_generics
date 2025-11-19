@@ -27,6 +27,7 @@ library(dbdataset)
 argv <- commandArgs(trailingOnly = TRUE)
 keep_all_flag <- "--keep-all" %in% argv
 parallel_enabled <- !("--no-parallel" %in% argv)
+quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
 
 detect_os_name <- function() {
   os <- Sys.info()[["sysname"]]
@@ -880,8 +881,10 @@ write_arrow_csv(final_dt, output_master_path)
 copy_outputs_to_superproject(output_master_path)
 
 cat(sprintf("Wrote %d rows to %s\n", nrow(final_dt), output_master_path))
-cat("Sample rows:\n")
-print(head(final_dt, 5))
+if (!quiet_mode) {
+  cat("Sample rows:\n")
+  print(head(final_dt, 5))
+}
 
 if (!is.null(plan_reset)) {
   try(future::plan(future::sequential), silent = TRUE)
