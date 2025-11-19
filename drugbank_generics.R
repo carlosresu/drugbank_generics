@@ -94,18 +94,6 @@ safe_copy <- function(src, dest) {
   invisible(dest)
 }
 
-copy_outputs_to_superproject <- function(output_path) {
-  script_dir <- get_script_dir()
-  super_root <- normalizePath(file.path(script_dir, "..", ".."))
-  dests <- list(
-    file.path(super_root, "dependencies", "drugbank_generics", "output", basename(output_path)),
-    file.path(super_root, "inputs", "drugs", basename(output_path))
-  )
-  for (dest in dests) {
-    safe_copy(output_path, dest)
-  }
-}
-
 collapse_ws <- function(x) {
   ifelse(is.na(x), NA_character_, trimws(gsub("\\s+", " ", as.character(x))))
 }
@@ -881,7 +869,6 @@ write_arrow_csv <- function(dt, path) {
 }
 
 write_arrow_csv(final_dt, output_master_path)
-copy_outputs_to_superproject(output_master_path)
 
 cat(sprintf("Wrote %d rows to %s\n", nrow(final_dt), output_master_path))
 if (!quiet_mode) {

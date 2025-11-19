@@ -28,16 +28,12 @@ safe_copy <- function(src, dest) {
 }
 
 propagate_outputs <- function(script_dir) {
-  repo_root <- normalizePath(file.path(script_dir, "..", ".."))
-  inputs_dir <- file.path(repo_root, "inputs", "drugs")
   output_dir <- file.path(script_dir, "output")
-
   generics_master <- file.path(output_dir, "drugbank_generics_master.csv")
   if (file.exists(generics_master)) {
     dests <- c(
       file.path(output_dir, "drugbank_generics.csv"),
-      file.path(inputs_dir, "drugbank_generics.csv"),
-      file.path(inputs_dir, "drugbank_generics_master.csv")
+      generics_master
     )
     for (dest in dests) {
       safe_copy(generics_master, dest)
@@ -46,7 +42,7 @@ propagate_outputs <- function(script_dir) {
 
   mixtures_master <- file.path(output_dir, "drugbank_mixtures_master.csv")
   if (file.exists(mixtures_master)) {
-    safe_copy(mixtures_master, file.path(inputs_dir, "drugbank_mixtures_master.csv"))
+    safe_copy(mixtures_master, file.path(output_dir, "drugbank_mixtures_master.csv"))
   }
 }
 

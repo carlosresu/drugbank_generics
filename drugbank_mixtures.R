@@ -96,15 +96,6 @@ safe_copy <- function(src, dest) {
   invisible(dest)
 }
 
-copy_outputs_to_superproject <- function(output_path) {
-  script_dir <- get_script_dir()
-  super_root <- normalizePath(file.path(script_dir, "..", ".."))
-  dest1 <- file.path(super_root, "dependencies", "drugbank_generics", "output", basename(output_path))
-  dest2 <- file.path(super_root, "inputs", "drugs", basename(output_path))
-  safe_copy(output_path, dest1)
-  safe_copy(output_path, dest2)
-}
-
 collapse_ws <- function(x) {
   ifelse(is.na(x), NA_character_, trimws(gsub("\\s+", " ", as.character(x))))
 }
@@ -401,7 +392,6 @@ setcolorder(mixtures_dt, c(
 setorder(mixtures_dt, mixture_name_key, mixture_drugbank_id, mixture_id)
 
 write_arrow_csv(mixtures_dt, mixtures_output_path)
-copy_outputs_to_superproject(mixtures_output_path)
 
 cat(sprintf("Wrote %d rows to %s\n", nrow(mixtures_dt), mixtures_output_path))
 if (!quiet_mode) {
