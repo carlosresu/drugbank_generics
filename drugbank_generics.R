@@ -108,7 +108,17 @@ combine_values <- function(...) {
 split_ingredients <- function(value) {
   val <- collapse_ws(value)
   if (is.na(val) || !nzchar(val)) return(character())
-  parts <- unlist(strsplit(val, "(?i)\\sand\\s|\\swith\\s|\\splus\\s|\\+|/|,|;", perl = TRUE))
+  repeat {
+    new_val <- gsub("(?<!\\S)\\([^()]*\\)(?=\\s|$)", " ", val, perl = TRUE)
+    if (identical(new_val, val)) break
+    val <- new_val
+  }
+  val <- gsub("\\s+", " ", val, perl = TRUE)
+  if (grepl("\\+", val)) {
+    val <- gsub(",\\s[^+]+(?=\\s*\\+)", "", val, perl = TRUE)
+  }
+  val <- gsub(",\\s[^+]+$", "", val, perl = TRUE)
+  parts <- unlist(strsplit(val, "(?i)\\sand\\s|\\swith\\s|\\splus\\s|\\+|/|,(?=\\s)|;", perl = TRUE))
   parts <- collapse_ws(parts)
   parts <- parts[nzchar(parts)]
   unique_canonical(parts)
