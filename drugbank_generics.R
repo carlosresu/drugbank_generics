@@ -124,6 +124,52 @@ split_ingredients <- function(value) {
   unique_canonical(parts)
 }
 
+strip_parenthetical_segments <- function(value) {
+  original <- collapse_ws(value)
+  if (is.na(original) || !nzchar(original)) {
+    return(list(base = NA_character_, details = NA_character_))
+  }
+  details <- character()
+  val <- original
+  repeat {
+    match <- regexpr("(?<!\\S)\\([^()]*\\)(?=\\s|$)", val, perl = TRUE)
+    if (match[1] == -1) break
+    seg <- substr(val, match[1], match[1] + attr(match, "match.length") - 1)
+    detail <- trimws(substr(seg, 2, nchar(seg) - 1))
+    if (nzchar(detail)) details <- c(details, detail)
+    val <- paste0(
+      substr(val, 1, match[1] - 1),
+      substr(val, match[1] + attr(match, "match.length"), nchar(val))
+    )
+  }
+  val <- gsub("\\s+", " ", val, perl = TRUE)
+  val <- trimws(val)
+  list(base = if (nzchar(val)) val else NA_character_, details = details)
+}
+
+strip_comma_segments <- function(value) {
+  if (is.na(value) || !nzchar(value)) return(list(base = value, detail = NA_character_))
+  match <- regexpr(",\\s+.+$", value, perl = TRUE)
+  if (match[1] == -1) return(list(base = value, detail = NA_character_))
+  detail <- trimws(substr(value, match[1] + 1, nchar(value)))
+  base <- trimws(substr(value, 1, match[1] - 1))
+  list(base = if (nzchar(base)) base else NA_character_, detail = if (nzchar(detail)) detail else NA_character_)
+}
+
+clean_form_route_entry <- function(value) {
+  parenthetical <- strip_parenthetical_segments(value)
+  base <- parenthetical$base
+  details <- parenthetical$details
+  comma_clean <- strip_comma_segments(base)
+  base <- comma_clean$base
+  if (!is.na(comma_clean$detail)) details <- c(details, comma_clean$detail)
+  detail_out <- if (length(details)) paste(details[details != ""], collapse = " | ") else NA_character_
+  list(
+    base = if (!is.null(base)) base else NA_character_,
+    detail = if (nzchar(detail_out)) detail_out else NA_character_
+  )
+}
+
 collapse_pipe <- function(values) {
   vals <- unique_canonical(values)
   if (!length(vals)) return(NA_character_)
@@ -596,6 +642,14 @@ process_source <- function(dt) {
   source_dt[, route_raw := collapse_ws(route_raw)]
   source_dt[, form_raw := collapse_ws(form_raw)]
   source_dt[, dose_raw := collapse_ws(dose_raw)]
+  source_dt[, raw_form_original := form_raw]
+  source_dt[, raw_route_original := route_raw]
+  form_clean_list <- lapply(form_raw, clean_form_route_entry)
+  route_clean_list <- lapply(route_raw, clean_form_route_entry)
+  source_dt[, raw_form_details := vapply(form_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
+  source_dt[, raw_route_details := vapply(route_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
+  source_dt[, form_raw := vapply(form_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
+  source_dt[, route_raw := vapply(route_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
   source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
   source_dt[, form_norm := unlist(parallel_lapply(as.list(form_raw), normalize_form_value), use.names = FALSE)]
   source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
@@ -639,15 +693,23 @@ combo_base <- combined[, {
   if (!length(routes) || all(is.na(routes))) routes <- NA_character_
   n <- length(routes)
   raw_route_val <- if (length(route_raw)) route_raw[[1]] else NA_character_
+  raw_route_original_val <- if (length(raw_route_original)) raw_route_original[[1]] else NA_character_
+  raw_route_details_val <- if (length(raw_route_details)) raw_route_details[[1]] else NA_character_
   form_norm_val <- if (length(form_norm)) form_norm[[1]] else NA_character_
   raw_form_val <- if (length(form_raw)) form_raw[[1]] else NA_character_
+  raw_form_original_val <- if (length(raw_form_original)) raw_form_original[[1]] else NA_character_
+  raw_form_details_val <- if (length(raw_form_details)) raw_form_details[[1]] else NA_character_
   dose_norm_val <- if (length(dose_norm)) dose_norm[[1]] else NA_character_
   raw_dose_val <- if (length(dose_raw)) dose_raw[[1]] else NA_character_
   data.table(
     route_norm = routes,
     raw_route = rep(raw_route_val, n),
+    raw_route_original = rep(raw_route_original_val, n),
+    raw_route_details = rep(raw_route_details_val, n),
     form_norm = rep(form_norm_val, n),
     raw_form = rep(raw_form_val, n),
+    raw_form_original = rep(raw_form_original_val, n),
+    raw_form_details = rep(raw_form_details_val, n),
     dose_norm = rep(dose_norm_val, n),
     raw_dose = rep(raw_dose_val, n)
   )
@@ -725,9 +787,13 @@ final_dt <- combo_dt[, .(
   dose_synonyms,
   form_norm,
   raw_form,
+  raw_form_details,
+  raw_form_original,
   form_synonyms,
   route_norm,
   raw_route,
+  raw_route_details,
+  raw_route_original,
   route_synonyms,
   atc_code,
   salt_names,
