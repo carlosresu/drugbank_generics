@@ -5,6 +5,9 @@
 # - drugbank_brands.csv: brand, generic
 # =================================
 
+cat("drugbank.R has been deprecated. Please run drugbank_all.R instead.\n")
+quit(save = "no", status = 0)
+
 ensure_installed <- function(packages, repos = "https://cloud.r-project.org") {
   for (pkg in packages) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
