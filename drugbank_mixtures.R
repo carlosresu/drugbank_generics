@@ -131,6 +131,18 @@ split_ingredients <- function(value) {
   unique_canonical(parts)
 }
 
+split_raw_components <- function(value) {
+  val <- collapse_ws(value)
+  if (is.na(val) || !nzchar(val)) return(character())
+  parts <- if (grepl("\\+", val)) {
+    unlist(strsplit(val, "\\+", perl = TRUE), use.names = FALSE)
+  } else {
+    val
+  }
+  parts <- collapse_ws(parts)
+  parts[nzchar(parts)]
+}
+
 collapse_pipe <- function(values) {
   vals <- unique_canonical(values)
   if (!length(vals)) return(NA_character_)
@@ -286,6 +298,12 @@ mixtures_dt <- as.data.table(dataset$drugs$mixtures)[
 mixtures_dt <- filter_excluded(mixtures_dt, "mixture_drugbank_id")
 mixtures_dt <- mixtures_dt[!(is.na(mixture_name) & is.na(ingredients_raw))]
 mixtures_dt[, mixture_name_key := normalize_lexeme_key(mixture_name)]
+raw_components_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), split_raw_components)
+raw_components_char <- unlist(parallel_lapply(raw_components_list, function(vec) {
+  if (!length(vec)) return(NA_character_)
+  paste(vec, collapse = " ; ")
+}), use.names = FALSE)
+mixtures_dt[, component_raw_segments := raw_components_char]
 ingredients_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), split_ingredients)
 mixtures_dt[, ingredient_components_vec := ingredients_list]
 ingredient_components_char <- unlist(parallel_lapply(ingredients_list, function(vec) {
@@ -352,6 +370,7 @@ setcolorder(mixtures_dt, c(
   "mixture_name",
   "mixture_name_key",
   "ingredients_raw",
+  "component_raw_segments",
   "ingredient_components",
   "ingredient_components_key",
   "component_lexemes",
