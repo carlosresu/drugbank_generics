@@ -112,15 +112,20 @@ split_ingredients <- function(value) {
   val <- collapse_ws(value)
   if (is.na(val) || !nzchar(val)) return(character())
   repeat {
-    new_val <- gsub("\\([^()]*\\)", "", val, perl = TRUE)
+    new_val <- gsub("(?<!\\S)\\([^()]*\\)(?=\\s|$)", " ", val, perl = TRUE)
     if (identical(new_val, val)) break
     val <- new_val
   }
+  val <- gsub("\\s+", " ", val, perl = TRUE)
   if (grepl("\\+", val)) {
-    val <- gsub(",[^+]+(?=\\s*\\+)", "", val, perl = TRUE)
+    val <- gsub(",\\s[^+]+(?=\\s*\\+)", "", val, perl = TRUE)
   }
-  val <- gsub(",[^+]+$", "", val, perl = TRUE)
-  parts <- unlist(strsplit(val, "(?i)\\sand\\s|\\swith\\s|\\splus\\s|\\+|/|,|;", perl = TRUE))
+  val <- gsub(",\\s[^+]+$", "", val, perl = TRUE)
+  parts <- if (grepl("\\+", val)) {
+    unlist(strsplit(val, "\\+", perl = TRUE), use.names = FALSE)
+  } else {
+    val
+  }
   parts <- collapse_ws(parts)
   parts <- parts[nzchar(parts)]
   unique_canonical(parts)
