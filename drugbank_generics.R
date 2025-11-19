@@ -647,8 +647,10 @@ process_source <- function(dt) {
   source_dt[, dose_raw := collapse_ws(dose_raw)]
   source_dt[, raw_form_original := form_raw]
   source_dt[, raw_route_original := route_raw]
-  form_clean_list <- lapply(form_raw, clean_form_route_entry)
-  route_clean_list <- lapply(route_raw, clean_form_route_entry)
+  form_vec <- source_dt$form_raw
+  route_vec <- source_dt$route_raw
+  form_clean_list <- lapply(form_vec, clean_form_route_entry)
+  route_clean_list <- lapply(route_vec, clean_form_route_entry)
   source_dt[, raw_form_details := vapply(form_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
   source_dt[, raw_route_details := vapply(route_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
   source_dt[, form_raw := vapply(form_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
