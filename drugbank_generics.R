@@ -639,6 +639,9 @@ salts_dt <- salts_dt[, .(salt_names_list = list(unique_canonical(salt_name))), b
 process_source <- function(dt) {
   source_dt <- copy(dt)
   source_dt <- filter_excluded(source_dt)
+  if (!"route_raw" %in% names(source_dt)) source_dt[, route_raw := NA_character_]
+  if (!"form_raw" %in% names(source_dt)) source_dt[, form_raw := NA_character_]
+  if (!"dose_raw" %in% names(source_dt)) source_dt[, dose_raw := NA_character_]
   source_dt[, route_raw := collapse_ws(route_raw)]
   source_dt[, form_raw := collapse_ws(form_raw)]
   source_dt[, dose_raw := collapse_ws(dose_raw)]
