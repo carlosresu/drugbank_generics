@@ -28,19 +28,37 @@ argv <- commandArgs(trailingOnly = TRUE)
 keep_all_flag <- "--keep-all" %in% argv
 parallel_enabled <- !("--no-parallel" %in% argv)
 
-plan_reset <- NULL
-if (parallel_enabled) {
+detect_os_name <- function() {
+  os <- Sys.info()[["sysname"]]
+  if (is.null(os)) os <- .Platform$OS.type
+  tolower(os)
+}
+
+init_parallel_plan <- function(enabled_flag) {
+  plan_state <- NULL
+  if (!enabled_flag) return(plan_state)
   tryCatch({
     ensure_installed("future")
     ensure_installed("future.apply")
     library(future)
     library(future.apply)
-    plan(multisession)
-    plan_reset <- TRUE
+    os_name <- detect_os_name()
+    workers <- max(1, future::availableCores())
+    if (os_name %in% c("windows")) {
+      plan(future::multisession, workers = workers)
+    } else if (future::supportsMulticore()) {
+      plan(future::multicore, workers = workers)
+    } else {
+      plan(future::multisession, workers = workers)
+    }
+    plan_state <- TRUE
   }, error = function(e) {
     parallel_enabled <<- FALSE
   })
+  plan_state
 }
+
+plan_reset <- init_parallel_plan(parallel_enabled)
 
 parallel_lapply <- function(x, fun) {
   if (parallel_enabled) {
@@ -94,9 +112,12 @@ empty_to_na <- function(x) {
 }
 
 unique_canonical <- function(values) {
-  vals <- values[!is.na(values) & nzchar(values)]
+  vals <- collapse_ws(values)
+  vals <- vals[!is.na(vals) & nzchar(vals)]
   if (!length(vals)) return(character())
-  vals[order(tolower(vals), vals)] |> unique()
+  vals <- vals[order(tolower(vals), vals)]
+  keys <- tolower(vals)
+  vals[!duplicated(keys)]
 }
 
 combine_values <- function(...) {
@@ -174,6 +195,12 @@ collapse_pipe <- function(values) {
   vals <- unique_canonical(values)
   if (!length(vals)) return(NA_character_)
   paste(vals, collapse = "|")
+}
+
+canonical_case_key <- function(value) {
+  val <- collapse_ws(value)
+  if (is.na(val) || !nzchar(val)) return(NA_character_)
+  tolower(val)
 }
 
 clean_numeric_string <- function(value) {
@@ -653,6 +680,10 @@ process_source <- function(dt) {
   route_clean_list <- lapply(route_vec, clean_form_route_entry)
   source_dt[, raw_form_details := vapply(form_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
   source_dt[, raw_route_details := vapply(route_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
+  source_dt[, raw_form_original_key := vapply(raw_form_original, canonical_case_key, character(1), USE.NAMES = FALSE)]
+  source_dt[, raw_form_details_key := vapply(raw_form_details, canonical_case_key, character(1), USE.NAMES = FALSE)]
+  source_dt[, raw_route_original_key := vapply(raw_route_original, canonical_case_key, character(1), USE.NAMES = FALSE)]
+  source_dt[, raw_route_details_key := vapply(raw_route_details, canonical_case_key, character(1), USE.NAMES = FALSE)]
   source_dt[, form_raw := vapply(form_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
   source_dt[, route_raw := vapply(route_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
   source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
@@ -700,10 +731,14 @@ combo_base <- combined[, {
   raw_route_val <- if (length(route_raw)) route_raw[[1]] else NA_character_
   raw_route_original_val <- if (length(raw_route_original)) raw_route_original[[1]] else NA_character_
   raw_route_details_val <- if (length(raw_route_details)) raw_route_details[[1]] else NA_character_
+  raw_route_original_key_val <- if (length(raw_route_original_key)) raw_route_original_key[[1]] else NA_character_
+  raw_route_details_key_val <- if (length(raw_route_details_key)) raw_route_details_key[[1]] else NA_character_
   form_norm_val <- if (length(form_norm)) form_norm[[1]] else NA_character_
   raw_form_val <- if (length(form_raw)) form_raw[[1]] else NA_character_
   raw_form_original_val <- if (length(raw_form_original)) raw_form_original[[1]] else NA_character_
   raw_form_details_val <- if (length(raw_form_details)) raw_form_details[[1]] else NA_character_
+  raw_form_original_key_val <- if (length(raw_form_original_key)) raw_form_original_key[[1]] else NA_character_
+  raw_form_details_key_val <- if (length(raw_form_details_key)) raw_form_details_key[[1]] else NA_character_
   dose_norm_val <- if (length(dose_norm)) dose_norm[[1]] else NA_character_
   raw_dose_val <- if (length(dose_raw)) dose_raw[[1]] else NA_character_
   data.table(
@@ -711,16 +746,34 @@ combo_base <- combined[, {
     raw_route = rep(raw_route_val, n),
     raw_route_original = rep(raw_route_original_val, n),
     raw_route_details = rep(raw_route_details_val, n),
+    raw_route_original_key = rep(raw_route_original_key_val, n),
+    raw_route_details_key = rep(raw_route_details_key_val, n),
     form_norm = rep(form_norm_val, n),
     raw_form = rep(raw_form_val, n),
     raw_form_original = rep(raw_form_original_val, n),
     raw_form_details = rep(raw_form_details_val, n),
+    raw_form_original_key = rep(raw_form_original_key_val, n),
+    raw_form_details_key = rep(raw_form_details_key_val, n),
     dose_norm = rep(dose_norm_val, n),
     raw_dose = rep(raw_dose_val, n)
   )
 }, by = .(drugbank_id, combo_id)]
 combo_base[, combo_id := NULL]
-combo_base <- unique(combo_base)
+dedup_cols <- c(
+  "drugbank_id",
+  "dose_norm",
+  "raw_dose",
+  "form_norm",
+  "raw_form",
+  "raw_form_original_key",
+  "raw_form_details_key",
+  "route_norm",
+  "raw_route",
+  "raw_route_original_key",
+  "raw_route_details_key"
+)
+combo_base <- unique(combo_base, by = dedup_cols)
+combo_base[, c("raw_form_original_key", "raw_form_details_key", "raw_route_original_key", "raw_route_details_key") := NULL]
 combo_base <- combo_base[!(is.na(dose_norm) & is.na(form_norm) & is.na(route_norm))]
 
 if (!nrow(combo_base)) {
@@ -764,7 +817,8 @@ combo_dt <- combo_dt[, {
   if (!length(lexes)) lexes <- canonical_generic_name
   data.table(lexeme = lexes)
 }, by = .(drugbank_id, canonical_generic_name, generic_components, generic_components_key,
-          dose_norm, raw_dose, form_norm, raw_form, route_norm, raw_route, atc_code,
+          dose_norm, raw_dose, form_norm, raw_form, raw_form_details, raw_form_original,
+          route_norm, raw_route, raw_route_details, raw_route_original, atc_code,
           salt_names, groups)]
 
 dose_syn_vec <- unlist(parallel_lapply(seq_len(nrow(combo_dt)), function(i) {

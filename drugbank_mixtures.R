@@ -22,21 +22,38 @@ library(dbdataset)
 
 argv <- commandArgs(trailingOnly = TRUE)
 parallel_enabled <- !("--no-parallel" %in% argv)
-plan_reset <- NULL
-if (parallel_enabled) {
+
+detect_os_name <- function() {
+  os <- Sys.info()[["sysname"]]
+  if (is.null(os)) os <- .Platform$OS.type
+  tolower(os)
+}
+
+init_parallel_plan <- function(enabled_flag) {
+  plan_state <- NULL
+  if (!enabled_flag) return(plan_state)
   tryCatch({
     ensure_installed("future")
     ensure_installed("future.apply")
-    ensure_installed("future.callr")
     library(future)
     library(future.apply)
-    workers <- max(1L, future::availableCores() - 1L)
-    plan(future.callr::callr, workers = workers)
-    plan_reset <- TRUE
+    os_name <- detect_os_name()
+    workers <- max(1, future::availableCores())
+    if (os_name %in% c("windows")) {
+      plan(future::multisession, workers = workers)
+    } else if (future::supportsMulticore()) {
+      plan(future::multicore, workers = workers)
+    } else {
+      plan(future::multisession, workers = workers)
+    }
+    plan_state <- TRUE
   }, error = function(e) {
     parallel_enabled <<- FALSE
   })
+  plan_state
 }
+
+plan_reset <- init_parallel_plan(parallel_enabled)
 
 parallel_lapply <- function(x, fun) {
   if (parallel_enabled) {
