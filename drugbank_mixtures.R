@@ -24,13 +24,28 @@ argv <- commandArgs(trailingOnly = TRUE)
 parallel_enabled <- !("--no-parallel" %in% argv)
 quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
 
+resolve_workers <- function() {
+  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_WORKERS", "")))
+  if (!is.na(env_val) && env_val > 0) return(env_val)
+  cores <- NA_integer_
+  try(cores <- parallel::detectCores(logical = TRUE), silent = TRUE)
+  if (is.na(cores) && requireNamespace("future", quietly = TRUE)) {
+    try(cores <- future::availableCores(), silent = TRUE)
+  }
+  if (is.na(cores)) cores <- 1L
+  max(1L, cores)
+}
+
 detect_os_name <- function() {
   os <- Sys.info()[["sysname"]]
   if (is.null(os)) os <- .Platform$OS.type
   tolower(os)
 }
 
-init_parallel_plan <- function(enabled_flag) {
+worker_count <- resolve_workers()
+data.table::setDTthreads(worker_count)
+
+init_parallel_plan <- function(enabled_flag, workers) {
   plan_state <- NULL
   if (!enabled_flag) return(plan_state)
   tryCatch({
@@ -39,7 +54,6 @@ init_parallel_plan <- function(enabled_flag) {
     library(future)
     library(future.apply)
     os_name <- detect_os_name()
-    workers <- max(1, future::availableCores())
     if (os_name %in% c("windows")) {
       plan(future::multisession, workers = workers)
     } else if (future::supportsMulticore()) {
@@ -54,21 +68,68 @@ init_parallel_plan <- function(enabled_flag) {
   plan_state
 }
 
-plan_reset <- init_parallel_plan(parallel_enabled)
+plan_reset <- init_parallel_plan(parallel_enabled, worker_count)
+cat(sprintf("[drugbank_mixtures] data.table threads: %s | parallel workers: %s\n", data.table::getDTthreads(), worker_count))
+
+choose_backend <- function() {
+  backend <- tolower(Sys.getenv("ESOA_DRUGBANK_BACKEND", "future"))
+  if (backend == "auto") {
+    if (.Platform$OS.type == "unix") return("mclapply")
+    return("future")
+  }
+  if (backend %chin% c("mclapply", "future")) return(backend)
+  "future"
+}
 
 parallel_lapply <- function(x, fun) {
-  if (parallel_enabled) {
-    result <- tryCatch(
-      future.apply::future_lapply(x, fun),
+  backend <- choose_backend()
+  if (parallel_enabled && backend == "mclapply" && .Platform$OS.type == "unix" && requireNamespace("parallel", quietly = TRUE)) {
+    cores <- max(1L, worker_count)
+    res <- tryCatch(
+      parallel::mclapply(
+        x,
+        fun,
+        mc.cores = cores,
+        mc.preschedule = FALSE
+      ),
       error = function(err) {
-        warning(sprintf("parallel execution failed (%s); falling back to sequential", conditionMessage(err)))
-        parallel_enabled <<- FALSE
+        msg <- sprintf(
+          "[parallel:mclapply] failed: %s | length(x)=%s | workers=%s",
+          conditionMessage(err),
+          length(x),
+          cores
+        )
+        cat(msg, "\n")
         NULL
       }
     )
-    if (!is.null(result)) return(result)
+    if (!is.null(res)) return(res)
+    cat("[parallel] Falling back to future backend after mclapply failure\n")
   }
-  lapply(x, fun)
+  if (parallel_enabled) {
+    return(
+      tryCatch(
+        future.apply::future_lapply(
+          x,
+          fun,
+          future.seed = FALSE,
+          future.scheduling = worker_count,
+          future.chunk.size = NULL
+        ),
+        error = function(err) {
+          msg <- sprintf(
+            "[parallel:future] failed: %s | length(x)=%s | workers=%s",
+            conditionMessage(err),
+            length(x),
+            worker_count
+          )
+          cat(msg, "\n")
+          stop(msg, call. = FALSE)
+        }
+      )
+    )
+  }
+  stop("[parallel] No supported parallel backend available on this platform.")
 }
 
 get_script_dir <- function() {
@@ -200,12 +261,21 @@ normalize_lexeme_key <- function(value) {
   vapply(value, normalize_lexeme_key_scalar, character(1), USE.NAMES = FALSE)
 }
 
-write_arrow_csv <- function(dt, path) {
-  if (requireNamespace("arrow", quietly = TRUE)) {
-    arrow::write_csv_arrow(dt, path)
+write_csv_and_parquet <- function(dt, path) {
+  if (!requireNamespace("arrow", quietly = TRUE)) {
+    stop("arrow package is required for Parquet export.")
+  }
+  arrow_table <- arrow::Table$create(dt)
+  if ("write_csv_arrow" %chin% getNamespaceExports("arrow")) {
+    arrow::write_csv_arrow(arrow_table, path)
+  } else if ("write_delim_arrow" %chin% getNamespaceExports("arrow")) {
+    arrow::write_delim_arrow(arrow_table, path, delim = ",")
   } else {
     data.table::fwrite(dt, path)
   }
+  parquet_path <- sub("\\.csv$", ".parquet", path)
+  arrow::write_parquet(arrow_table, parquet_path)
+  parquet_path
 }
 
 find_generics_master_path <- function(script_dir, filename) {
@@ -391,7 +461,7 @@ setcolorder(mixtures_dt, c(
 
 setorder(mixtures_dt, mixture_name_key, mixture_drugbank_id, mixture_id)
 
-write_arrow_csv(mixtures_dt, mixtures_output_path)
+write_csv_and_parquet(mixtures_dt, mixtures_output_path)
 
 cat(sprintf("Wrote %d rows to %s\n", nrow(mixtures_dt), mixtures_output_path))
 if (!quiet_mode) {

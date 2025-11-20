@@ -29,17 +29,6 @@ safe_copy <- function(src, dest) {
 
 propagate_outputs <- function(script_dir) {
   output_dir <- file.path(script_dir, "output")
-  generics_master <- file.path(output_dir, "drugbank_generics_master.csv")
-  if (file.exists(generics_master)) {
-    dests <- c(
-      file.path(output_dir, "drugbank_generics.csv"),
-      generics_master
-    )
-    for (dest in dests) {
-      safe_copy(generics_master, dest)
-    }
-  }
-
   mixtures_master <- file.path(output_dir, "drugbank_mixtures_master.csv")
   if (file.exists(mixtures_master)) {
     safe_copy(mixtures_master, file.path(output_dir, "drugbank_mixtures_master.csv"))
@@ -57,6 +46,10 @@ run_subscript <- function(script_path, env_vars = character()) {
 }
 
 script_dir <- get_script_dir()
+workers <- Sys.getenv("ESOA_DRUGBANK_WORKERS", unset = "")
+if (nzchar(workers)) {
+  message(sprintf("[drugbank_all] Using %s workers (ESOA_DRUGBANK_WORKERS)", workers))
+}
 subscripts <- c("drugbank_generics.R", "drugbank_mixtures.R")
 env_forward <- sprintf("ESOA_DRUGBANK_QUIET=%s", Sys.getenv("ESOA_DRUGBANK_QUIET", unset = "0"))
 

@@ -29,13 +29,28 @@ keep_all_flag <- "--keep-all" %in% argv
 parallel_enabled <- !("--no-parallel" %in% argv)
 quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
 
+resolve_workers <- function() {
+  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_WORKERS", "")))
+  if (!is.na(env_val) && env_val > 0) return(env_val)
+  cores <- NA_integer_
+  try(cores <- parallel::detectCores(logical = TRUE), silent = TRUE)
+  if (is.na(cores) && requireNamespace("future", quietly = TRUE)) {
+    try(cores <- future::availableCores(), silent = TRUE)
+  }
+  if (is.na(cores)) cores <- 13L
+  max(13L, cores)
+}
+
 detect_os_name <- function() {
   os <- Sys.info()[["sysname"]]
   if (is.null(os)) os <- .Platform$OS.type
   tolower(os)
 }
 
-init_parallel_plan <- function(enabled_flag) {
+worker_count <- resolve_workers()
+data.table::setDTthreads(worker_count)
+
+init_parallel_plan <- function(enabled_flag, workers) {
   plan_state <- NULL
   if (!enabled_flag) return(plan_state)
   tryCatch({
@@ -44,7 +59,6 @@ init_parallel_plan <- function(enabled_flag) {
     library(future)
     library(future.apply)
     os_name <- detect_os_name()
-    workers <- max(1, future::availableCores())
     if (os_name %in% c("windows")) {
       plan(future::multisession, workers = workers)
     } else if (future::supportsMulticore()) {
@@ -59,14 +73,75 @@ init_parallel_plan <- function(enabled_flag) {
   plan_state
 }
 
-plan_reset <- init_parallel_plan(parallel_enabled)
+plan_reset <- init_parallel_plan(parallel_enabled, worker_count)
+cat(sprintf("[drugbank_generics] data.table threads: %s | parallel workers: %s\n", data.table::getDTthreads(), worker_count))
+
+choose_backend <- function() {
+  backend <- tolower(Sys.getenv("ESOA_DRUGBANK_BACKEND", "future"))
+  if (backend == "auto") {
+    if (.Platform$OS.type == "unix") return("mclapply")
+    return("future")
+  }
+  if (backend %chin% c("mclapply", "future")) return(backend)
+  "future"
+}
 
 parallel_lapply <- function(x, fun) {
-  if (parallel_enabled) {
-    future.apply::future_lapply(x, fun)
-  } else {
-    lapply(x, fun)
+  backend <- choose_backend()
+  if (parallel_enabled && backend == "mclapply" && .Platform$OS.type == "unix" && requireNamespace("parallel", quietly = TRUE)) {
+    cores <- max(1L, worker_count)
+    res <- tryCatch(
+      parallel::mclapply(
+        x,
+        fun,
+        mc.cores = cores,
+        mc.preschedule = FALSE
+      ),
+      error = function(err) {
+        msg <- sprintf(
+          "[parallel:mclapply] failed: %s | length(x)=%s | workers=%s",
+          conditionMessage(err),
+          length(x),
+          cores
+        )
+        cat(msg, "\n")
+        NULL
+      }
+    )
+    if (!is.null(res)) return(res)
+    cat("[parallel] Falling back to future backend after mclapply failure\n")
   }
+  if (parallel_enabled) {
+    return(
+      tryCatch(
+        future.apply::future_lapply(
+          x,
+          fun,
+          future.seed = FALSE,
+          future.scheduling = worker_count,
+          future.chunk.size = NULL
+        ),
+        error = function(err) {
+          msg <- sprintf(
+            "[parallel:future] failed: %s | length(x)=%s | workers=%s",
+            conditionMessage(err),
+            length(x),
+            worker_count
+          )
+          cat(msg, "\n")
+          stop(msg, call. = FALSE)
+        }
+      )
+    )
+  }
+  stop("[parallel] No supported parallel backend available on this platform.")
+}
+
+resolve_chunk_size <- function(total_rows) {
+  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_CHUNK", "")))
+  if (!is.na(env_val) && env_val > 0) return(env_val)
+  # Aim for multiple chunks per worker while avoiding excessive overhead.
+  max(800L, ceiling(total_rows / max(1L, worker_count * 3L)))
 }
 
 get_script_dir <- function() {
@@ -396,52 +471,83 @@ FORM_CANONICAL_KEYS <- names(FORM_CANONICAL_MAP)[order(nchar(names(FORM_CANONICA
 FORM_CANONICAL_VALUES <- unique(unlist(FORM_CANONICAL_MAP, use.names = FALSE))
 RELEASE_PATTERN <- "(extended(?:-|\u0020)?release|immediate(?:-|\u0020)?release|delayed(?:-|\u0020)?release|sustained(?:-|\u0020)?release|controlled(?:-|\u0020)?release)"
 
+FORM_TO_ROUTE_CANONICAL <- list(
+  "tablet" = "oral", "tab" = "oral", "tabs" = "oral", "chewing gum" = "oral",
+  "capsule" = "oral", "cap" = "oral", "caps" = "oral", "capsulee" = "oral",
+  "syrup" = "oral", "suspension" = "oral", "susp" = "oral", "solution" = "oral", "soln" = "oral", "sol" = "oral",
+  "sachet" = "oral",
+  "drop" = "ophthalmic", "eye drop" = "ophthalmic", "ear drop" = "otic",
+  "cream" = "topical", "ointment" = "topical", "gel" = "topical", "lotion" = "topical",
+  "patch" = "transdermal",
+  "inhaler" = "inhalation", "nebule" = "inhalation", "neb" = "inhalation",
+  "inhal.aerosol" = "inhalation", "inhal.powder" = "inhalation", "inhal.solution" = "inhalation", "oral aerosol" = "inhalation",
+  "ampoule" = c("intravenous", "intravesical"), "amp" = c("intravenous", "intravesical"), "ampul" = c("intravenous", "intravesical"), "ampule" = c("intravenous", "intravesical"), "vial" = c("intravenous", "intravesical"),
+  "inj" = c("intravenous", "intravesical"), "injection" = c("intravenous", "intravesical"),
+  "suppository" = "rectal", "supp" = "rectal",
+  "mdi" = "inhalation", "dpi" = "inhalation",
+  "metered dose inhaler" = "inhalation",
+  "dry powder inhaler" = "inhalation",
+  "spray" = "nasal", "nasal spray" = "nasal",
+  "td" = "transdermal",
+  "instill.solution" = "ophthalmic", "lamella" = "ophthalmic",
+  "implant" = "subcutaneous", "s.c. implant" = "subcutaneous"
+)
+
 normalize_form_value <- function(value) {
-  if (is.null(value) || is.na(value)) return(NA_character_)
+  if (is.null(value) || is.na(value)) return(character())
   s <- tolower(collapse_ws(value))
-  if (!nzchar(s)) return(NA_character_)
-  release_match <- regexpr(RELEASE_PATTERN, s, perl = TRUE)
-  release_suffix <- ""
-  if (release_match[1] > -1) {
-    release_suffix <- regmatches(s, list(release_match))[[1]]
-    release_suffix <- gsub("-", " ", release_suffix, fixed = TRUE)
-    s <- trimws(sub(RELEASE_PATTERN, "", s, perl = TRUE))
-  }
-  base_part <- strsplit(s, "[,;/]", perl = TRUE)[[1]]
-  base_token <- if (length(base_part)) trimws(base_part[1]) else s
-  canonical <- if (base_token %chin% names(FORM_CANONICAL_MAP)) FORM_CANONICAL_MAP[[base_token]] else NULL
-  if (is.null(canonical)) {
-    for (key in FORM_CANONICAL_KEYS) {
-      if (grepl(paste0("\\b", key, "\\b"), base_token, perl = TRUE)) {
-        canonical <- FORM_CANONICAL_MAP[[key]]
-        break
+  if (!nzchar(s)) return(character())
+  # Split multi-form strings (e.g., "kit; tablet") before normalizing each token.
+  raw_parts <- strsplit(s, "[;|/]", perl = TRUE)[[1]]
+  if (!length(raw_parts)) raw_parts <- c(s)
+  canon_values <- character()
+  for (part in raw_parts) {
+    token <- trimws(part)
+    if (!nzchar(token)) next
+    release_match <- regexpr(RELEASE_PATTERN, token, perl = TRUE)
+    release_suffix <- ""
+    if (release_match[1] > -1) {
+      release_suffix <- regmatches(token, list(release_match))[[1]]
+      release_suffix <- gsub("-", " ", release_suffix, fixed = TRUE)
+      token <- trimws(sub(RELEASE_PATTERN, "", token, perl = TRUE))
+    }
+    base_part <- strsplit(token, "[,]", perl = TRUE)[[1]]
+    base_token <- if (length(base_part)) trimws(base_part[1]) else token
+    canonical <- if (base_token %chin% names(FORM_CANONICAL_MAP)) FORM_CANONICAL_MAP[[base_token]] else NULL
+    if (is.null(canonical)) {
+      for (key in FORM_CANONICAL_KEYS) {
+        if (grepl(paste0("\\b", key, "\\b"), base_token, perl = TRUE)) {
+          canonical <- FORM_CANONICAL_MAP[[key]]
+          break
+        }
       }
     }
-  }
-  if (is.null(canonical)) {
-    for (value_candidate in FORM_CANONICAL_VALUES) {
-      if (grepl(paste0("\\b", value_candidate, "\\b"), base_token, perl = TRUE)) {
-        canonical <- value_candidate
-        break
+    if (is.null(canonical)) {
+      for (value_candidate in FORM_CANONICAL_VALUES) {
+        if (grepl(paste0("\\b", value_candidate, "\\b"), base_token, perl = TRUE)) {
+          canonical <- value_candidate
+          break
+        }
       }
     }
+    if (is.null(canonical) || !nzchar(canonical)) {
+      canonical <- base_token
+    }
+    canonical <- trimws(gsub("\\s+", " ", canonical, perl = TRUE))
+    if (nzchar(release_suffix)) {
+      suffix <- trimws(gsub("\\s+", " ", release_suffix, perl = TRUE))
+      canonical <- paste0(canonical, ", ", suffix)
+    }
+    if (nzchar(canonical)) canon_values <- c(canon_values, canonical)
   }
-  if (is.null(canonical) || !nzchar(canonical)) {
-    canonical <- base_token
-  }
-  canonical <- trimws(gsub("\\s+", " ", canonical, perl = TRUE))
-  if (nzchar(release_suffix)) {
-    suffix <- trimws(gsub("\\s+", " ", release_suffix, perl = TRUE))
-    return(paste0(canonical, ", ", suffix))
-  }
-  canonical
+  unique_canonical(canon_values)
 }
 
 normalize_form_vector <- function(values) {
   if (is.null(values) || !length(values)) return(character())
   out <- unlist(lapply(values, function(v) {
     norm <- normalize_form_value(v)
-    if (is.null(norm) || is.na(norm) || !nzchar(norm)) return(character())
+    if (is.null(norm) || length(norm) == 0) return(character())
     norm
   }), use.names = FALSE)
   if (!length(out)) return(character())
@@ -470,7 +576,10 @@ ROUTE_ALIAS_MAP <- list(
 )
 
 ROUTE_ALIAS_KEYS <- names(ROUTE_ALIAS_MAP)[order(nchar(names(ROUTE_ALIAS_MAP)), decreasing = TRUE)]
-ALLOWED_ROUTE_SET <- sort(unique(unlist(ROUTE_ALIAS_MAP, use.names = FALSE)))
+ALLOWED_ROUTE_SET <- sort(unique(c(
+  unlist(ROUTE_ALIAS_MAP, use.names = FALSE),
+  unlist(FORM_TO_ROUTE_CANONICAL, use.names = FALSE)
+)))
 
 normalize_route_entry <- function(value) {
   if (is.null(value) || is.na(value)) return(character())
@@ -489,6 +598,8 @@ normalize_route_entry <- function(value) {
     if (!nzchar(part_trim)) next
     if (!is.null(ROUTE_ALIAS_MAP[[part_trim]])) {
       tokens <- c(tokens, ROUTE_ALIAS_MAP[[part_trim]])
+    } else if (!is.null(FORM_TO_ROUTE_CANONICAL[[part_trim]])) {
+      tokens <- c(tokens, FORM_TO_ROUTE_CANONICAL[[part_trim]])
     } else if (part_trim %chin% ALLOWED_ROUTE_SET) {
       tokens <- c(tokens, part_trim)
     } else {
@@ -498,6 +609,8 @@ normalize_route_entry <- function(value) {
         if (!nzchar(word_trim)) next
         if (!is.null(ROUTE_ALIAS_MAP[[word_trim]])) {
           tokens <- c(tokens, ROUTE_ALIAS_MAP[[word_trim]])
+        } else if (!is.null(FORM_TO_ROUTE_CANONICAL[[word_trim]])) {
+          tokens <- c(tokens, FORM_TO_ROUTE_CANONICAL[[word_trim]])
         } else if (word_trim %chin% ALLOWED_ROUTE_SET) {
           tokens <- c(tokens, word_trim)
         }
@@ -580,6 +693,46 @@ expand_salt_set <- function(values) {
   unique_canonical(expanded)
 }
 
+is_route_compatible <- function(form_val, route_val) {
+  if (is.null(form_val) || is.na(form_val) || !nzchar(form_val)) return(TRUE)
+  if (is.null(route_val) || is.na(route_val) || !nzchar(route_val)) return(TRUE)
+  expected <- FORM_TO_ROUTE_CANONICAL[[form_val]]
+  if (is.null(expected)) return(TRUE)
+  route_val %chin% expected
+}
+
+collect_disallowed_pairs <- function(dt) {
+  if (!nrow(dt)) return(data.table())
+  chunk_size <- resolve_chunk_size(nrow(dt))
+  worker <- function(ix) {
+    rows <- lapply(ix, function(i) {
+      routes <- unique_canonical(dt$route_norm_list[[i]])
+      forms <- unique_canonical(dt$form_norm_list[[i]])
+      if (!length(routes) || all(is.na(routes)) || !length(forms) || all(is.na(forms))) return(NULL)
+      pairs <- data.table::data.table(
+        route_norm = rep(routes, each = length(forms)),
+        form_norm = rep(forms, times = length(routes))
+      )
+      pairs <- pairs[!is.na(route_norm) & !is.na(form_norm)]
+      if (!nrow(pairs)) return(NULL)
+      allowed_mask <- mapply(is_route_compatible, pairs$form_norm, pairs$route_norm)
+      allowed_mask[is.na(allowed_mask)] <- TRUE
+      disallowed <- pairs[!as.logical(allowed_mask)]
+      if (!nrow(disallowed)) return(NULL)
+      disallowed[, drugbank_id := dt$drugbank_id[[i]]]
+      disallowed[, raw_route := dt$route_raw[[i]]]
+      disallowed[, raw_form := dt$form_raw[[i]]]
+      disallowed[, raw_route_original := dt$raw_route_original[[i]]]
+      disallowed[, raw_form_original := dt$raw_form_original[[i]]]
+      disallowed
+    })
+    data.table::rbindlist(rows, fill = TRUE)
+  }
+  idx <- split(seq_len(nrow(dt)), ceiling(seq_len(nrow(dt)) / chunk_size))
+  parts <- parallel_lapply(idx, worker)
+  data.table::rbindlist(parts, fill = TRUE, use.names = TRUE)
+}
+
 script_dir <- get_script_dir()
 output_dir <- file.path(script_dir, "output")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
@@ -656,6 +809,53 @@ salts_dt <- salts_dt[!is.na(salt_name) & nzchar(salt_name)]
 salts_dt <- salts_dt[, .(salt_names_list = list(unique_canonical(salt_name))), by = drugbank_id]
 
 process_source <- function(dt) {
+  if (!nrow(dt)) return(dt)
+  chunk_size <- resolve_chunk_size(nrow(dt))
+  process_block <- function(block) {
+    source_dt <- copy(block)
+    source_dt <- filter_excluded(source_dt)
+    if (!"route_raw" %in% names(source_dt)) source_dt[, route_raw := NA_character_]
+    if (!"form_raw" %in% names(source_dt)) source_dt[, form_raw := NA_character_]
+    if (!"dose_raw" %in% names(source_dt)) source_dt[, dose_raw := NA_character_]
+    source_dt[, route_raw := collapse_ws(route_raw)]
+    source_dt[, form_raw := collapse_ws(form_raw)]
+    source_dt[, dose_raw := collapse_ws(dose_raw)]
+    source_dt[, raw_form_original := form_raw]
+    source_dt[, raw_route_original := route_raw]
+    form_vec <- source_dt$form_raw
+    route_vec <- source_dt$route_raw
+    form_clean_list <- lapply(form_vec, clean_form_route_entry)
+    route_clean_list <- lapply(route_vec, clean_form_route_entry)
+    source_dt[, raw_form_details := vapply(form_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
+    source_dt[, raw_route_details := vapply(route_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
+    source_dt[, raw_form_original_key := vapply(raw_form_original, canonical_case_key, character(1), USE.NAMES = FALSE)]
+    source_dt[, raw_form_details_key := vapply(raw_form_details, canonical_case_key, character(1), USE.NAMES = FALSE)]
+    source_dt[, raw_route_original_key := vapply(raw_route_original, canonical_case_key, character(1), USE.NAMES = FALSE)]
+    source_dt[, raw_route_details_key := vapply(raw_route_details, canonical_case_key, character(1), USE.NAMES = FALSE)]
+    source_dt[, form_raw := vapply(form_clean_list, function(x) collapse_ws(x$base), character(1), USE.NAMES = FALSE)]
+    # Preserve full route string to allow multi-token splits downstream.
+    source_dt[, route_raw := route_raw]
+    source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
+    source_dt[, form_norm_list := parallel_lapply(as.list(form_raw), normalize_form_value)]
+    source_dt[, form_norm_list := lapply(form_norm_list, function(vals) {
+      vals <- unique_canonical(vals)
+      if (!length(vals)) vals <- NA_character_
+      vals
+    })]
+    source_dt[, form_norm := vapply(form_norm_list, function(vals) {
+      if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
+    }, character(1), USE.NAMES = FALSE)]
+    source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
+    source_dt[form_norm == "", form_norm := NA_character_]
+    source_dt[dose_norm == "", dose_norm := NA_character_]
+    source_dt
+  }
+
+  if (parallel_enabled && worker_count > 1L && nrow(dt) > 1L) {
+    idx <- split(seq_len(nrow(dt)), ceiling(seq_len(nrow(dt)) / chunk_size))
+    parts <- parallel_lapply(idx, function(ix) process_block(dt[ix]))
+    return(rbindlist(parts, fill = TRUE, use.names = TRUE))
+  }
   source_dt <- copy(dt)
   source_dt <- filter_excluded(source_dt)
   if (!"route_raw" %in% names(source_dt)) source_dt[, route_raw := NA_character_]
@@ -679,7 +879,15 @@ process_source <- function(dt) {
   source_dt[, form_raw := vapply(form_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
   source_dt[, route_raw := vapply(route_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
   source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
-  source_dt[, form_norm := unlist(parallel_lapply(as.list(form_raw), normalize_form_value), use.names = FALSE)]
+  source_dt[, form_norm_list := parallel_lapply(as.list(form_raw), normalize_form_value)]
+  source_dt[, form_norm_list := lapply(form_norm_list, function(vals) {
+    vals <- unique_canonical(vals)
+    if (!length(vals)) vals <- NA_character_
+    vals
+  })]
+  source_dt[, form_norm := vapply(form_norm_list, function(vals) {
+    if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
+  }, character(1), USE.NAMES = FALSE)]
   source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
   source_dt[form_norm == "", form_norm := NA_character_]
   source_dt[dose_norm == "", dose_norm := NA_character_]
@@ -709,48 +917,74 @@ if (length(dataset$products)) {
 products_proc <- process_source(products_raw)
 
 combined <- rbindlist(list(dosages_proc, products_proc), fill = TRUE)
-combined[, combo_id := .I]
+disallowed_pairs <- collect_disallowed_pairs(combined)
 combined[, route_norm_list := lapply(route_norm_list, function(x) {
   vals <- unique_canonical(x)
   if (!length(vals)) vals <- NA_character_
   vals
 })]
+combined[, form_norm_list := lapply(form_norm_list, function(x) {
+  vals <- unique_canonical(x)
+  if (!length(vals)) vals <- NA_character_
+  vals
+})]
 
-combo_base <- combined[, {
-  routes <- route_norm_list[[1]]
-  if (!length(routes) || all(is.na(routes))) routes <- NA_character_
-  n <- length(routes)
-  raw_route_val <- if (length(route_raw)) route_raw[[1]] else NA_character_
-  raw_route_original_val <- if (length(raw_route_original)) raw_route_original[[1]] else NA_character_
-  raw_route_details_val <- if (length(raw_route_details)) raw_route_details[[1]] else NA_character_
-  raw_route_original_key_val <- if (length(raw_route_original_key)) raw_route_original_key[[1]] else NA_character_
-  raw_route_details_key_val <- if (length(raw_route_details_key)) raw_route_details_key[[1]] else NA_character_
-  form_norm_val <- if (length(form_norm)) form_norm[[1]] else NA_character_
-  raw_form_val <- if (length(form_raw)) form_raw[[1]] else NA_character_
-  raw_form_original_val <- if (length(raw_form_original)) raw_form_original[[1]] else NA_character_
-  raw_form_details_val <- if (length(raw_form_details)) raw_form_details[[1]] else NA_character_
-  raw_form_original_key_val <- if (length(raw_form_original_key)) raw_form_original_key[[1]] else NA_character_
-  raw_form_details_key_val <- if (length(raw_form_details_key)) raw_form_details_key[[1]] else NA_character_
-  dose_norm_val <- if (length(dose_norm)) dose_norm[[1]] else NA_character_
-  raw_dose_val <- if (length(dose_raw)) dose_raw[[1]] else NA_character_
-  data.table(
-    route_norm = routes,
-    raw_route = rep(raw_route_val, n),
-    raw_route_original = rep(raw_route_original_val, n),
-    raw_route_details = rep(raw_route_details_val, n),
-    raw_route_original_key = rep(raw_route_original_key_val, n),
-    raw_route_details_key = rep(raw_route_details_key_val, n),
-    form_norm = rep(form_norm_val, n),
-    raw_form = rep(raw_form_val, n),
-    raw_form_original = rep(raw_form_original_val, n),
-    raw_form_details = rep(raw_form_details_val, n),
-    raw_form_original_key = rep(raw_form_original_key_val, n),
-    raw_form_details_key = rep(raw_form_details_key_val, n),
-    dose_norm = rep(dose_norm_val, n),
-    raw_dose = rep(raw_dose_val, n)
-  )
-}, by = .(drugbank_id, combo_id)]
-combo_base[, combo_id := NULL]
+expand_combos_chunk <- function(chunk_dt) {
+  result <- vector("list", nrow(chunk_dt))
+  for (i in seq_len(nrow(chunk_dt))) {
+    routes <- unique_canonical(chunk_dt$route_norm_list[[i]])
+    if (!length(routes) || all(is.na(routes))) routes <- NA_character_
+    forms <- unique_canonical(chunk_dt$form_norm_list[[i]])
+    if (!length(forms) || all(is.na(forms))) forms <- NA_character_
+    if (length(routes) == 1L && length(forms) == 1L) {
+      pairs <- data.table::data.table(route_norm = routes, form_norm = forms)
+    } else {
+      pairs <- data.table::data.table(
+        route_norm = rep(routes, each = length(forms)),
+        form_norm = rep(forms, times = length(routes))
+      )
+      if (!nrow(pairs)) pairs <- data.table::data.table(route_norm = NA_character_, form_norm = NA_character_)
+      data.table::setkeyv(pairs, c("route_norm", "form_norm"))
+      pairs <- unique(pairs)
+    }
+    n <- nrow(pairs)
+    raw_route_val <- if (length(chunk_dt$route_raw)) chunk_dt$route_raw[[i]] else NA_character_
+    raw_route_original_val <- if (length(chunk_dt$raw_route_original)) chunk_dt$raw_route_original[[i]] else NA_character_
+    raw_route_details_val <- if (length(chunk_dt$raw_route_details)) chunk_dt$raw_route_details[[i]] else NA_character_
+    raw_route_original_key_val <- if (length(chunk_dt$raw_route_original_key)) chunk_dt$raw_route_original_key[[i]] else NA_character_
+    raw_route_details_key_val <- if (length(chunk_dt$raw_route_details_key)) chunk_dt$raw_route_details_key[[i]] else NA_character_
+    raw_form_val <- if (length(chunk_dt$form_raw)) chunk_dt$form_raw[[i]] else NA_character_
+    raw_form_original_val <- if (length(chunk_dt$raw_form_original)) chunk_dt$raw_form_original[[i]] else NA_character_
+    raw_form_details_val <- if (length(chunk_dt$raw_form_details)) chunk_dt$raw_form_details[[i]] else NA_character_
+    raw_form_original_key_val <- if (length(chunk_dt$raw_form_original_key)) chunk_dt$raw_form_original_key[[i]] else NA_character_
+    raw_form_details_key_val <- if (length(chunk_dt$raw_form_details_key)) chunk_dt$raw_form_details_key[[i]] else NA_character_
+    dose_norm_val <- if (length(chunk_dt$dose_norm)) chunk_dt$dose_norm[[i]] else NA_character_
+    raw_dose_val <- if (length(chunk_dt$raw_dose)) chunk_dt$raw_dose[[i]] else NA_character_
+    result[[i]] <- data.table(
+      drugbank_id = chunk_dt$drugbank_id[[i]],
+      route_norm = pairs$route_norm,
+      form_norm = pairs$form_norm,
+      raw_route = rep(raw_route_val, n),
+      raw_route_original = rep(raw_route_original_val, n),
+      raw_route_details = rep(raw_route_details_val, n),
+      raw_route_original_key = rep(raw_route_original_key_val, n),
+      raw_route_details_key = rep(raw_route_details_key_val, n),
+      raw_form = rep(raw_form_val, n),
+      raw_form_original = rep(raw_form_original_val, n),
+      raw_form_details = rep(raw_form_details_val, n),
+      raw_form_original_key = rep(raw_form_original_key_val, n),
+      raw_form_details_key = rep(raw_form_details_key_val, n),
+      dose_norm = rep(dose_norm_val, n),
+      raw_dose = rep(raw_dose_val, n)
+    )
+  }
+  data.table::rbindlist(result, fill = TRUE, use.names = TRUE)
+}
+
+combo_chunk_size <- resolve_chunk_size(nrow(combined))
+combo_indices <- split(seq_len(nrow(combined)), ceiling(seq_len(nrow(combined)) / combo_chunk_size))
+combo_parts <- parallel_lapply(combo_indices, function(ix) expand_combos_chunk(combined[ix]))
+combo_base <- data.table::rbindlist(combo_parts, fill = TRUE, use.names = TRUE)
 dedup_cols <- c(
   "drugbank_id",
   "dose_norm",
@@ -851,6 +1085,44 @@ final_dt <- combo_dt[, .(
   groups
 )]
 
+write_csv_and_parquet <- function(dt, csv_path) {
+  if (!requireNamespace("arrow", quietly = TRUE)) {
+    stop("arrow package is required for Parquet export.")
+  }
+  arrow_table <- arrow::Table$create(dt)
+  if ("write_csv_arrow" %chin% getNamespaceExports("arrow")) {
+    arrow::write_csv_arrow(arrow_table, csv_path)
+  } else if ("write_delim_arrow" %chin% getNamespaceExports("arrow")) {
+    arrow::write_delim_arrow(arrow_table, csv_path, delim = ",")
+  } else {
+    data.table::fwrite(dt, csv_path)
+  }
+  parquet_path <- sub("\\.csv$", ".parquet", csv_path)
+  arrow::write_parquet(arrow_table, parquet_path)
+  parquet_path
+}
+
+if (exists("disallowed_pairs") && nrow(disallowed_pairs)) {
+  disallowed_pairs <- merge(
+    disallowed_pairs,
+    name_dt[, .(drugbank_id, canonical_generic_name)],
+    by = "drugbank_id",
+    all.x = TRUE
+  )
+  disallowed_cols <- c(
+    "drugbank_id",
+    "canonical_generic_name",
+    "form_norm",
+    "route_norm",
+    "raw_form",
+    "raw_route",
+    "raw_form_original",
+    "raw_route_original"
+  )
+  disallowed_path <- file.path(output_dir, "drugbank_route_form_exclusions.csv")
+  write_csv_and_parquet(disallowed_pairs[, ..disallowed_cols], disallowed_path)
+}
+
 if (!keep_all_flag) {
   final_dt[, approved_flag := grepl("approved", groups, ignore.case = TRUE)]
   final_dt[, atc_flag := !is.na(atc_code) & nzchar(trimws(atc_code))]
@@ -860,15 +1132,7 @@ if (!keep_all_flag) {
 
 setorder(final_dt, canonical_generic_name, lexeme, atc_code, dose_norm, form_norm, route_norm)
 
-write_arrow_csv <- function(dt, path) {
-  if (requireNamespace("arrow", quietly = TRUE)) {
-    arrow::write_csv_arrow(dt, path)
-  } else {
-    data.table::fwrite(dt, path)
-  }
-}
-
-write_arrow_csv(final_dt, output_master_path)
+write_csv_and_parquet(final_dt, output_master_path)
 
 cat(sprintf("Wrote %d rows to %s\n", nrow(final_dt), output_master_path))
 if (!quiet_mode) {
