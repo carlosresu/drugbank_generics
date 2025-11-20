@@ -220,7 +220,7 @@ strip_parenthetical_segments <- function(value) {
   details <- character()
   val <- original
   repeat {
-    match <- regexpr("(?<!\\S)\\([^()]*\\)(?=\\s|$)", val, perl = TRUE)
+    match <- regexpr("(?<!\\S)\\([^()]*\\)(?=\\s|$|[;,:/])", val, perl = TRUE)
     if (match[1] == -1) break
     seg <- substr(val, match[1], match[1] + attr(match, "match.length") - 1)
     detail <- trimws(substr(seg, 2, nchar(seg) - 1))
@@ -846,6 +846,7 @@ process_source <- function(dt) {
       if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
     }, character(1), USE.NAMES = FALSE)]
     source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
+    source_dt[, raw_dose := dose_raw]
     source_dt[form_norm == "", form_norm := NA_character_]
     source_dt[dose_norm == "", dose_norm := NA_character_]
     source_dt
@@ -889,6 +890,7 @@ process_source <- function(dt) {
     if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
   }, character(1), USE.NAMES = FALSE)]
   source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
+  source_dt[, raw_dose := dose_raw]
   source_dt[form_norm == "", form_norm := NA_character_]
   source_dt[dose_norm == "", dose_norm := NA_character_]
   source_dt
