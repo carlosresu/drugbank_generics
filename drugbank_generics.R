@@ -141,7 +141,7 @@ resolve_chunk_size <- function(total_rows) {
   env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_CHUNK", "")))
   if (!is.na(env_val) && env_val > 0) return(env_val)
   # Aim for multiple chunks per worker while avoiding excessive overhead.
-  max(800L, ceiling(total_rows / max(1L, worker_count * 3L)))
+  max(1000L, ceiling(total_rows / max(1L, worker_count * 3L)))
 }
 
 get_script_dir <- function() {

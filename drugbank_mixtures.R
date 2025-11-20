@@ -45,6 +45,13 @@ detect_os_name <- function() {
 worker_count <- resolve_workers()
 data.table::setDTthreads(worker_count)
 
+resolve_chunk_size <- function(total_rows) {
+  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_CHUNK", "")))
+  if (!is.na(env_val) && env_val > 0) return(env_val)
+  # Aim for multiple chunks per worker while avoiding excessive overhead.
+  max(1000L, ceiling(total_rows / max(1L, worker_count * 3L)))
+}
+
 init_parallel_plan <- function(enabled_flag, workers) {
   plan_state <- NULL
   if (!enabled_flag) return(plan_state)
