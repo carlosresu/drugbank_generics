@@ -38,7 +38,7 @@ resolve_workers <- function() {
     try(cores <- future::availableCores(), silent = TRUE)
   }
   if (is.na(cores)) cores <- 13L
-  max(13L, cores)
+  min(13L, max(1L, cores))
 }
 
 detect_os_name <- function() {
@@ -176,6 +176,15 @@ collapse_ws <- function(x) {
 empty_to_na <- function(x) {
   val <- collapse_ws(x)
   ifelse(!nzchar(val), NA_character_, val)
+}
+
+split_coder_tokens <- function(value) {
+  if (is.na(value)) return(character())
+  cleaned <- trimws(value)
+  if (!nzchar(cleaned)) return(character())
+  tokens <- unlist(strsplit(cleaned, "[,\\/]"))
+  tokens <- tolower(trimws(tokens))
+  tokens[tokens != ""]
 }
 
 unique_canonical <- function(values) {
@@ -785,8 +794,21 @@ allowed_synonym_coders <- c("inn", "usan", "ban", "jan", "dcj", "usp", "dcit")
 syn_dt <- syn_dt[
   !is.na(synonym) & nzchar(synonym) &
     !is.na(language) & grepl("english", language, fixed = TRUE) &
-    !is.na(coder) & coder %chin% allowed_synonym_coders
+    !is.na(coder)
 ]
+syn_dt[, coder_tokens := lapply(coder, split_coder_tokens)]
+has_allowed <- vapply(
+  syn_dt$coder_tokens,
+  function(vals) length(vals) > 0 && any(vals %chin% allowed_synonym_coders),
+  logical(1)
+)
+only_iupac <- vapply(
+  syn_dt$coder_tokens,
+  function(vals) length(vals) > 0 && all(vals == "iupac"),
+  logical(1)
+)
+syn_dt <- syn_dt[has_allowed & !only_iupac]
+syn_dt[, coder_tokens := NULL]
 syn_dt <- syn_dt[, .(synonyms_list = list(unique_canonical(synonym))), by = drugbank_id]
 
 # atc
