@@ -3,33 +3,38 @@
 
 suppressWarnings({
   suppressPackageStartupMessages({
-    ensure_installed <- function(pkg, repos = "https://cloud.r-project.org") {
-      if (!requireNamespace(pkg, quietly = TRUE)) {
+    ensure_installed <- function(pkg, repos = c("https://community.r-multiverse.org", "https://cloud.r-project.org"), min_version = NULL) {
+      needs_install <- !requireNamespace(pkg, quietly = TRUE)
+      if (!needs_install && !is.null(min_version)) {
+        needs_install <- utils::packageVersion(pkg) < min_version
+      }
+      if (needs_install) {
         install.packages(pkg, repos = repos)
       }
     }
-    install_tidypolars <- function() {
-      if (!requireNamespace("tidypolars", quietly = TRUE)) {
-        Sys.setenv(NOT_CRAN = "true")
-        install.packages(
-          "tidypolars",
-          repos = c("https://community.r-multiverse.org", "https://cloud.r-project.org")
-        )
-      }
+    install_polars <- function() {
+      ensure_installed(
+        "polars",
+        repos = c("https://community.r-multiverse.org", "https://cloud.r-project.org"),
+        min_version = "1.6.0"
+      )
     }
-    install_tidypolars()
+    install_polars()
     ensure_installed("dbdataset")
   })
 })
 
 suppressPackageStartupMessages({
-  library(tidypolars)
-  library(dplyr, warn.conflicts = FALSE)
-  library(tidyr, warn.conflicts = FALSE)
+  library(polars)
   library(dbdataset)
 })
 
 pl <- polars::pl
+
+to_polars_df <- function(x) {
+  if (inherits(x, "DataFrame") || inherits(x, "polars_DataFrame")) return(x)
+  pl$DataFrame(as.data.frame(x))
+}
 
 argv <- commandArgs(trailingOnly = TRUE)
 quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
@@ -200,116 +205,98 @@ generics_master_path <- find_generics_master_path(script_dir, "drugbank_generics
 
 dataset <- drugbank
 
-groups_df <- as_polars_df(dataset$drugs$groups) |>
-  mutate(
-    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
-    group_clean = pl$col("group")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$String)
-  )
-excluded_ids <- groups_df |>
-  filter(pl$col("group_clean") == "vet") |>
-  pull("drugbank_id") |>
-  unique() |>
-  to_r()
+groups_df <- to_polars_df(dataset$drugs$groups)$with_columns(
+  drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+  group_clean = pl$col("group")$map_batches(function(x) tolower(trimws(x)), return_dtype = pl$String)
+)$select("drugbank_id", "group_clean")
+excluded_ids <- as.vector(groups_df$filter(pl$col("group_clean") == "vet")$get_column("drugbank_id")$unique())
 
 filter_excluded <- function(df, id_col = "drugbank_id") {
   if (!length(excluded_ids)) return(df)
-  dplyr::filter(df, !pl$col(id_col)$is_in(excluded_ids))
+  df$filter(!pl$col(id_col)$is_in(excluded_ids))
 }
 
-groups_clean <- groups_df |>
-  filter(
-    !pl$col("drugbank_id")$is_in(excluded_ids) &
-      pl$col("group_clean")$is_not_null() &
-      pl$col("group_clean") != ""
-  ) |>
-  group_by(drugbank_id) |>
-  summarise(groups_list = pl$col("group_clean")) |>
-  mutate(
-    groups_list = pl$col("groups_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$String))
-  )
-groups_lookup <- groups_clean$to_r()
+groups_clean <- groups_df$filter(
+  !pl$col("drugbank_id")$is_in(excluded_ids) &
+    pl$col("group_clean")$is_not_null() &
+    pl$col("group_clean") != ""
+)$group_by("drugbank_id")$agg(pl$col("group_clean")$alias("groups_list"))
+groups_clean <- groups_clean$with_columns(
+  groups_list = pl$col("groups_list")$map_batches(unique_canonical, return_dtype = pl$List(pl$String))
+)
+groups_lookup <- as.data.frame(groups_clean)
 groups_lookup <- setNames(groups_lookup$groups_list, groups_lookup$drugbank_id)
 
-salts_df <- as_polars_df(dataset$salts) |>
-  mutate(
-    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
-    salt_name = pl$col("name")$map_elements(collapse_ws, return_dtype = pl$String)
-  ) |>
-  select(drugbank_id, salt_name) |>
-  filter_excluded() |>
-  filter(pl$col("salt_name")$is_not_null() & pl$col("salt_name") != "") |>
-  group_by(drugbank_id) |>
-  summarise(salt_names_list = pl$col("salt_name")) |>
-  mutate(
-    salt_names_list = pl$col("salt_names_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$String))
-  )
-salts_lookup <- salts_df$to_r()
+salts_df <- to_polars_df(dataset$salts)$with_columns(
+  drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+  salt_name = pl$col("name")$map_batches(collapse_ws, return_dtype = pl$String)
+)$select("drugbank_id", "salt_name")
+salts_df <- filter_excluded(salts_df)
+salts_df <- salts_df$filter(pl$col("salt_name")$is_not_null() & pl$col("salt_name") != "")
+salts_df <- salts_df$group_by("drugbank_id")$agg(pl$col("salt_name")$alias("salt_names_list"))
+salts_df <- salts_df$with_columns(
+  salt_names_list = pl$col("salt_names_list")$map_batches(unique_canonical, return_dtype = pl$List(pl$String))
+)
+salts_lookup <- as.data.frame(salts_df)
 salts_lookup <- setNames(salts_lookup$salt_names_list, salts_lookup$drugbank_id)
 
-generics_df <- read_parquet_polars(generics_master_path)
+generics_df <- pl$read_parquet(generics_master_path)
 required_cols <- c("drugbank_id", "lexeme", "generic_components_key")
 missing_cols <- setdiff(required_cols, generics_df$names())
 if (length(missing_cols)) {
   stop("Generics master missing required columns: ", paste(missing_cols, collapse = ", "))
 }
-generics_df <- generics_df |>
-  mutate(
-    lexeme_key = pl$col("lexeme")$map_elements(normalize_lexeme_key_scalar, return_dtype = pl$String)
-  )
-generics_lexeme_df <- generics_df |>
-  select("drugbank_id", "lexeme_key") |>
-  to_r()
+generics_df <- generics_df$with_columns(
+  lexeme_key = pl$col("lexeme")$map_batches(normalize_lexeme_key_scalar, return_dtype = pl$String)
+)
+generics_lexeme_df <- as.data.frame(generics_df$select("drugbank_id", "lexeme_key"))
 generics_lexeme_df <- generics_lexeme_df[!is.na(generics_lexeme_df$lexeme_key) & nzchar(generics_lexeme_df$lexeme_key), ]
 lexeme_map <- split(generics_lexeme_df$drugbank_id, generics_lexeme_df$lexeme_key)
 lexeme_map <- lapply(lexeme_map, unique)
 
-generic_key_lookup <- generics_df |>
-  select("drugbank_id", "generic_components_key") |>
-  to_r()
+generic_key_lookup <- as.data.frame(generics_df$select("drugbank_id", "generic_components_key"))
 generic_key_lookup <- generic_key_lookup[!is.na(generic_key_lookup$generic_components_key) & nzchar(generic_key_lookup$generic_components_key), ]
 generic_key_lookup <- generic_key_lookup[!duplicated(generic_key_lookup$drugbank_id), ]
 generic_key_lookup <- setNames(generic_key_lookup$generic_components_key, generic_key_lookup$drugbank_id)
 
-mixtures_df <- as_polars_df(dataset$drugs$mixtures) |>
-  mutate(
-    mixture_drugbank_id = pl$col("drugbank_id")$cast(pl$String),
-    mixture_name = pl$col("name")$map_elements(collapse_ws, return_dtype = pl$String),
-    ingredients_raw = pl$col("ingredients")$map_elements(collapse_ws, return_dtype = pl$String)
-  ) |>
-  select(mixture_drugbank_id, mixture_name, ingredients_raw) |>
-  filter_excluded(id_col = "mixture_drugbank_id") |>
-  filter(!(pl$col("mixture_name")$is_null() & pl$col("ingredients_raw")$is_null())) |>
-  mutate(
-    mixture_name_key = pl$col("mixture_name")$map_elements(normalize_lexeme_key_scalar, return_dtype = pl$String),
-    raw_components_list = pl$col("ingredients_raw")$map_elements(split_raw_components, return_dtype = pl$List(pl$String)),
-    ingredient_components_vec = pl$col("ingredients_raw")$map_elements(split_ingredients, return_dtype = pl$List(pl$String))
-  ) |>
-  mutate(
-    component_raw_segments = pl$col("raw_components_list")$map_elements(
-      function(vec) {
-        if (!length(vec)) return(NA_character_)
-        paste(vec, collapse = " ; ")
-      },
-      return_dtype = pl$String
-    ),
-    ingredient_components = pl$col("ingredient_components_vec")$map_elements(
-      function(vec) {
-        if (!length(vec)) return(NA_character_)
-        paste(vec, collapse = "; ")
-      },
-      return_dtype = pl$String
-    ),
-    ingredient_components_key = pl$col("ingredient_components_vec")$map_elements(
-      function(vec) {
-        if (!length(vec)) return(NA_character_)
-        keys <- unique(normalize_lexeme_key(vec))
-        keys <- keys[!is.na(keys) & nzchar(keys)]
-        if (!length(keys)) return(NA_character_)
-        paste(sort(keys), collapse = "||")
-      },
-      return_dtype = pl$String
-    )
+mixtures_df <- to_polars_df(dataset$drugs$mixtures)$with_columns(
+  mixture_drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+  mixture_name = pl$col("name")$map_batches(collapse_ws, return_dtype = pl$String),
+  ingredients_raw = pl$col("ingredients")$map_batches(collapse_ws, return_dtype = pl$String)
+)$select("mixture_drugbank_id", "mixture_name", "ingredients_raw")
+mixtures_df <- filter_excluded(mixtures_df, "mixture_drugbank_id")
+mixtures_df <- mixtures_df$filter(!(pl$col("mixture_name")$is_null() & pl$col("ingredients_raw")$is_null()))
+mixtures_df <- mixtures_df$with_columns(
+  mixture_name_key = pl$col("mixture_name")$map_batches(normalize_lexeme_key_scalar, return_dtype = pl$String),
+  raw_components_list = pl$col("ingredients_raw")$map_batches(split_raw_components, return_dtype = pl$List(pl$String)),
+  ingredient_components_vec = pl$col("ingredients_raw")$map_batches(split_ingredients, return_dtype = pl$List(pl$String))
+)
+mixtures_df <- mixtures_df$with_columns(
+  component_raw_segments = pl$col("raw_components_list")$map_batches(
+    function(vec) {
+      if (!length(vec)) return(NA_character_)
+      paste(vec, collapse = " ; ")
+    },
+    return_dtype = pl$String
+  ),
+  ingredient_components = pl$col("ingredient_components_vec")$map_batches(
+    function(vec) {
+      if (!length(vec)) return(NA_character_)
+      paste(vec, collapse = "; ")
+    },
+    return_dtype = pl$String
+  ),
+  ingredient_components_key = pl$col("ingredient_components_vec")$map_batches(
+    function(vec) {
+      if (!length(vec)) return(NA_character_)
+      keys <- unique(normalize_lexeme_key(vec))
+      keys <- keys[!is.na(keys) & nzchar(keys)]
+      if (!length(keys)) return(NA_character_)
+      paste(sort(keys), collapse = "||")
+    },
+    return_dtype = pl$String
   )
+)
 
 resolve_component_ids <- function(vec, lex_map) {
   if (is.null(vec) || !length(vec)) return(character())
@@ -323,7 +310,7 @@ resolve_component_ids <- function(vec, lex_map) {
   unique(ids)
 }
 
-mixtures_r <- mixtures_df$to_r()
+mixtures_r <- as.data.frame(mixtures_df)
 mixtures_r$component_ids_list <- lapply(mixtures_r$ingredient_components_vec, resolve_component_ids, lex_map = lexeme_map)
 mixtures_r$component_generic_keys_list <- lapply(mixtures_r$component_ids_list, function(ids) {
   if (!length(ids)) return(character())
@@ -346,32 +333,29 @@ mixtures_r$salt_names <- vapply(mixtures_r$mixture_drugbank_id, function(id) {
 }, character(1), USE.NAMES = FALSE)
 mixtures_r$mixture_id <- seq_len(nrow(mixtures_r))
 
-mixtures_df <- as_polars_df(mixtures_r) |>
-  mutate(
-    component_ids_list = pl$col("component_ids_list")$cast(pl$List(pl$String)),
-    component_generic_keys_list = pl$col("component_generic_keys_list")$cast(pl$List(pl$String))
-  ) |>
-  select(
-    "mixture_id",
-    "mixture_drugbank_id",
-    "mixture_name",
-    "mixture_name_key",
-    "ingredients_raw",
-    "component_raw_segments",
-    "ingredient_components",
-    "ingredient_components_key",
-    "component_lexemes",
-    "component_drugbank_ids",
-    "component_generic_keys",
-    "groups",
-    "salt_names"
-  ) |>
-  arrange(mixture_name_key, mixture_drugbank_id, mixture_id)
+mixtures_df <- to_polars_df(mixtures_r)$with_columns(
+  component_ids_list = pl$col("component_ids_list")$cast(pl$List(pl$String)),
+  component_generic_keys_list = pl$col("component_generic_keys_list")$cast(pl$List(pl$String))
+)$select(
+  "mixture_id",
+  "mixture_drugbank_id",
+  "mixture_name",
+  "mixture_name_key",
+  "ingredients_raw",
+  "component_raw_segments",
+  "ingredient_components",
+  "ingredient_components_key",
+  "component_lexemes",
+  "component_drugbank_ids",
+  "component_generic_keys",
+  "groups",
+  "salt_names"
+)$sort(c("mixture_name_key", "mixture_drugbank_id", "mixture_id"))
 
 write_csv_and_parquet(mixtures_df, mixtures_output_csv)
 
-cat(sprintf("Wrote %d rows to %s (Parquet + CSV)\n", mixtures_df$height(), mixtures_output_csv))
+cat(sprintf("Wrote %d rows to %s (Parquet + CSV)\n", mixtures_df$height, mixtures_output_csv))
 if (!quiet_mode) {
   cat("Sample rows:\n")
-  print(mixtures_df$head(5)$to_r())
+  print(as.data.frame(mixtures_df$head(5)))
 }

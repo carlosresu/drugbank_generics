@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# Placeholder for a future tidypolars-based brand export.
+# Placeholder for a future polars-based brand export.
 
-cat("DrugBank brands pipeline is not yet implemented. TODO(tidypolars): convert brand exports to tidypolars/polars and Parquet when available.\n")
+cat("DrugBank brands pipeline is not yet implemented. TODO(polars): convert brand exports to polars and Parquet when available.\n")
 quit(status = 0)
