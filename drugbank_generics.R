@@ -781,10 +781,11 @@ syn_dt <- as.data.table(dataset$drugs$synonyms)[
   )
 ]
 syn_dt <- filter_excluded(syn_dt)
+allowed_synonym_coders <- c("inn", "usan", "ban", "jan", "dcj", "usp", "dcit")
 syn_dt <- syn_dt[
   !is.na(synonym) & nzchar(synonym) &
     !is.na(language) & grepl("english", language, fixed = TRUE) &
-    !is.na(coder) & coder %chin% c("inn", "ban", "usan", "jan", "usp")
+    !is.na(coder) & coder %chin% allowed_synonym_coders
 ]
 syn_dt <- syn_dt[, .(synonyms_list = list(unique_canonical(synonym))), by = drugbank_id]
 
