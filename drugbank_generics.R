@@ -788,9 +788,13 @@ process_source <- function(df) {
       form_raw = character(),
       dose_raw = character(),
       raw_route_original = character(),
+      raw_route_original_key = character(),
       raw_form_original = character(),
+      raw_form_original_key = character(),
       raw_route_details = character(),
+      raw_route_details_key = character(),
       raw_form_details = character(),
+      raw_form_details_key = character(),
       route_norm_list = list(),
       form_norm_list = list(),
       dose_norm = character(),
@@ -809,9 +813,13 @@ process_source <- function(df) {
       form_raw = character(),
       dose_raw = character(),
       raw_route_original = character(),
+      raw_route_original_key = character(),
       raw_form_original = character(),
+      raw_form_original_key = character(),
       raw_route_details = character(),
+      raw_route_details_key = character(),
       raw_form_details = character(),
+      raw_form_details_key = character(),
       route_norm_list = list(),
       form_norm_list = list(),
       dose_norm = character(),
@@ -822,7 +830,10 @@ process_source <- function(df) {
   df$raw_form_original <- df$form_raw
   df$raw_route_details <- vapply(df$route_raw, clean_form_route_detail, character(1), USE.NAMES = FALSE)
   df$raw_form_details <- vapply(df$form_raw, clean_form_route_detail, character(1), USE.NAMES = FALSE)
-  df$route_raw <- vapply(df$route_raw, clean_form_route_base, character(1), USE.NAMES = FALSE)
+  df$raw_route_original_key <- vapply(df$raw_route_original, canonical_case_key, character(1), USE.NAMES = FALSE)
+  df$raw_route_details_key <- vapply(df$raw_route_details, canonical_case_key, character(1), USE.NAMES = FALSE)
+  df$raw_form_original_key <- vapply(df$raw_form_original, canonical_case_key, character(1), USE.NAMES = FALSE)
+  df$raw_form_details_key <- vapply(df$raw_form_details, canonical_case_key, character(1), USE.NAMES = FALSE)
   df$form_raw <- vapply(df$form_raw, clean_form_route_base, character(1), USE.NAMES = FALSE)
   df$route_norm_list <- lapply(df$route_raw, normalize_route_entry)
   df$form_norm_list <- lapply(df$form_raw, normalize_form_value)
@@ -912,10 +923,14 @@ expand_combos <- function(df) {
       form_norm = pairs$form_norm,
       raw_route = rep(df$route_raw[[i]], n),
       raw_route_original = rep(df$raw_route_original[[i]], n),
+      raw_route_original_key = rep(df$raw_route_original_key[[i]], n),
+      raw_route_details = rep(df$raw_route_details[[i]], n),
+      raw_route_details_key = rep(df$raw_route_details_key[[i]], n),
       raw_form = rep(df$form_raw[[i]], n),
       raw_form_original = rep(df$raw_form_original[[i]], n),
-      raw_route_details = rep(df$raw_route_details[[i]], n),
+      raw_form_original_key = rep(df$raw_form_original_key[[i]], n),
       raw_form_details = rep(df$raw_form_details[[i]], n),
+      raw_form_details_key = rep(df$raw_form_details_key[[i]], n),
       dose_norm = rep(df$dose_norm[[i]], n),
       raw_dose = rep(df$dose_raw[[i]], n),
       stringsAsFactors = FALSE
@@ -925,21 +940,23 @@ expand_combos <- function(df) {
 }
 
 combo_base <- expand_combos(combined_r)
-if (nrow(combo_base)) {
-  dedup_cols <- c(
-    "drugbank_id",
-    "dose_norm",
-    "raw_dose",
-    "form_norm",
-    "raw_form",
-    "raw_form_details",
-    "route_norm",
-    "raw_route",
-    "raw_route_details"
-  )
-  combo_base <- combo_base[!duplicated(combo_base[, dedup_cols, drop = FALSE]), ]
-  combo_base <- combo_base[!(is.na(combo_base$dose_norm) & is.na(combo_base$form_norm) & is.na(combo_base$route_norm)), ]
-}
+  if (nrow(combo_base)) {
+    dedup_cols <- c(
+      "drugbank_id",
+      "dose_norm",
+      "raw_dose",
+      "form_norm",
+      "raw_form",
+      "raw_form_original_key",
+      "raw_form_details_key",
+      "route_norm",
+      "raw_route",
+      "raw_route_original_key",
+      "raw_route_details_key"
+    )
+    combo_base <- combo_base[!duplicated(combo_base[, dedup_cols, drop = FALSE]), ]
+    combo_base <- combo_base[!(is.na(combo_base$dose_norm) & is.na(combo_base$form_norm) & is.na(combo_base$route_norm)), ]
+  }
 
 if (!nrow(combo_base)) {
   stop("No real combinations found in DrugBank data.")
