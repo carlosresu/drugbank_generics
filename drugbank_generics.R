@@ -36,8 +36,19 @@ suppressPackageStartupMessages({
 pl <- polars::pl
 
 to_polars_df <- function(x) {
-  if (inherits(x, "DataFrame") || inherits(x, "polars_DataFrame")) return(x)
-  pl$DataFrame(as.data.frame(x))
+  if (is_polars_df(x)) return(x)
+  if (is_polars_lf(x)) return(x$collect())
+  if (is.data.frame(x)) {
+    return(as_polars_df(x))
+  }
+  if (is.list(x)) {
+    list_cols <- vapply(x, is.list, logical(1))
+    if (any(list_cols)) {
+      x[list_cols] <- lapply(x[list_cols], I)
+    }
+    return(as_polars_df(x))
+  }
+  as_polars_df(list(value = x))
 }
 
 argv <- commandArgs(trailingOnly = TRUE)
@@ -372,7 +383,7 @@ FORM_CANONICAL_MAP <- list(
 
 FORM_CANONICAL_KEYS <- names(FORM_CANONICAL_MAP)[order(nchar(names(FORM_CANONICAL_MAP)), decreasing = TRUE)]
 FORM_CANONICAL_VALUES <- unique(unlist(FORM_CANONICAL_MAP, use.names = FALSE))
-RELEASE_PATTERN <- "(extended(?:-|\\u0020)?release|immediate(?:-|\\u0020)?release|delayed(?:-|\\u0020)?release|sustained(?:-|\\u0020)?release|controlled(?:-|\\u0020)?release)"
+RELEASE_PATTERN <- "(extended(?:-|\\s)?release|immediate(?:-|\\s)?release|delayed(?:-|\\s)?release|sustained(?:-|\\s)?release|controlled(?:-|\\s)?release)"
 
 FORM_TO_ROUTE_CANONICAL <- list(
   "tablet" = "oral", "tab" = "oral", "tabs" = "oral", "chewing gum" = "oral",
@@ -764,6 +775,12 @@ if (nrow(salts_raw)) {
 salts_df <- filter_excluded(salts_df)
 
 process_source <- function(df) {
+  if (is_polars_lf(df)) {
+    df <- df$collect()
+  }
+  if (is_polars_df(df)) {
+    df <- as.data.frame(df)
+  }
   if (is.null(df) || !nrow(df)) {
     return(to_polars_df(list(
       drugbank_id = character(),
@@ -786,7 +803,7 @@ process_source <- function(df) {
   df$dose_raw <- collapse_ws(df$dose_raw)
   df <- df[!(df$drugbank_id %in% excluded_ids), ]
   if (!nrow(df)) {
-    return(pl$DataFrame(list(
+    return(to_polars_df(list(
       drugbank_id = character(),
       route_raw = character(),
       form_raw = character(),
@@ -837,7 +854,7 @@ if (length(dataset$drugs$dosages)) {
     dose_raw = pl$col("strength")
   )
 } else {
-  dosages_raw <- pl$DataFrame(list(
+  dosages_raw <- to_polars_df(list(
     drugbank_id = character(),
     route_raw = character(),
     form_raw = character(),
@@ -854,7 +871,7 @@ if (length(dataset$products)) {
     dose_raw = pl$col("strength")
   )
 } else {
-  products_raw <- pl$DataFrame(list(
+  products_raw <- to_polars_df(list(
     drugbank_id = character(),
     route_raw = character(),
     form_raw = character(),
