@@ -8,8 +8,8 @@ suppressWarnings({
         install.packages(pkg, repos = "https://cloud.r-project.org")
       }
     }
-    ensure_installed("data.table")
     ensure_installed("dbdataset")
+    ensure_installed("polars")
   })
 })
 
@@ -17,8 +17,8 @@ tryCatch({
   ensure_installed("arrow")
 }, error = function(e) {})
 
-library(data.table)
 library(dbdataset)
+library(polars)
 
 argv <- commandArgs(trailingOnly = TRUE)
 parallel_enabled <- !("--no-parallel" %in% argv)
@@ -43,7 +43,6 @@ detect_os_name <- function() {
 }
 
 worker_count <- resolve_workers()
-data.table::setDTthreads(worker_count)
 
 resolve_chunk_size <- function(total_rows) {
   env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_CHUNK", "")))
@@ -76,7 +75,7 @@ init_parallel_plan <- function(enabled_flag, workers) {
 }
 
 plan_reset <- init_parallel_plan(parallel_enabled, worker_count)
-cat(sprintf("[drugbank_mixtures] data.table threads: %s | parallel workers: %s\n", data.table::getDTthreads(), worker_count))
+cat(sprintf("[drugbank_mixtures] parallel workers: %s\n", worker_count))
 
 choose_backend <- function() {
   backend <- tolower(Sys.getenv("ESOA_DRUGBANK_BACKEND", "future"))
@@ -84,7 +83,7 @@ choose_backend <- function() {
     if (.Platform$OS.type == "unix") return("mclapply")
     return("future")
   }
-  if (backend %chin% c("mclapply", "future")) return(backend)
+  if (backend %in% c("mclapply", "future")) return(backend)
   "future"
 }
 
@@ -268,20 +267,11 @@ normalize_lexeme_key <- function(value) {
   vapply(value, normalize_lexeme_key_scalar, character(1), USE.NAMES = FALSE)
 }
 
-write_csv_and_parquet <- function(dt, path) {
-  if (!requireNamespace("arrow", quietly = TRUE)) {
-    stop("arrow package is required for Parquet export.")
-  }
-  arrow_table <- arrow::Table$create(dt)
-  if ("write_csv_arrow" %chin% getNamespaceExports("arrow")) {
-    arrow::write_csv_arrow(arrow_table, path)
-  } else if ("write_delim_arrow" %chin% getNamespaceExports("arrow")) {
-    arrow::write_delim_arrow(arrow_table, path, delim = ",")
-  } else {
-    data.table::fwrite(dt, path)
-  }
+write_csv_and_parquet <- function(df, path) {
   parquet_path <- sub("\\.csv$", ".parquet", path)
-  arrow::write_parquet(arrow_table, parquet_path)
+  polars_df <- pl$DataFrame(as.data.frame(df))
+  polars_df$write_parquet(parquet_path)
+  polars_df$write_csv(path)
   parquet_path
 }
 
@@ -333,70 +323,69 @@ generics_master_path <- find_generics_master_path(script_dir, "drugbank_generics
 
 dataset <- drugbank
 
-groups_dt <- as.data.table(dataset$drugs$groups)
-groups_dt[, drugbank_id := as.character(drugbank_id)]
-groups_dt[, group_clean := tolower(trimws(group))]
-excluded_ids <- unique(groups_dt[group_clean %chin% c("vet"), drugbank_id])
+groups_df <- as.data.frame(dataset$drugs$groups, stringsAsFactors = FALSE)
+groups_df$drugbank_id <- as.character(groups_df$drugbank_id)
+groups_df$group_clean <- tolower(trimws(groups_df$group))
+excluded_ids <- unique(groups_df$drugbank_id[groups_df$group_clean %in% c("vet")])
 
-filter_excluded <- function(dt, id_col = "drugbank_id") {
-  dt[!(get(id_col) %chin% excluded_ids)]
+filter_excluded <- function(df, id_col = "drugbank_id") {
+  df[!(df[[id_col]] %in% excluded_ids), , drop = FALSE]
 }
 
-groups_clean_dt <- groups_dt[!(drugbank_id %chin% excluded_ids) & !is.na(group_clean) & nzchar(group_clean)]
-groups_clean_dt <- groups_clean_dt[, .(groups_list = list(unique_canonical(group_clean))), by = drugbank_id]
-groups_lookup <- setNames(groups_clean_dt$groups_list, groups_clean_dt$drugbank_id)
+groups_clean_df <- groups_df[!(groups_df$drugbank_id %in% excluded_ids) & !is.na(groups_df$group_clean) & nzchar(groups_df$group_clean), , drop = FALSE]
+groups_split <- split(groups_clean_df$group_clean, groups_clean_df$drugbank_id)
+groups_lookup <- lapply(groups_split, unique_canonical)
 
-salts_dt <- as.data.table(dataset$salts)[
-  , .(drugbank_id = as.character(drugbank_id), salt_name = collapse_ws(name))
-]
-salts_dt <- filter_excluded(salts_dt)
-salts_dt <- salts_dt[!is.na(salt_name) & nzchar(salt_name)]
-salts_dt <- salts_dt[, .(salt_names_list = list(unique_canonical(salt_name))), by = drugbank_id]
-salts_lookup <- setNames(salts_dt$salt_names_list, salts_dt$drugbank_id)
+salts_df <- as.data.frame(dataset$salts, stringsAsFactors = FALSE)
+salts_df <- salts_df[, c("drugbank_id", "name"), drop = FALSE]
+names(salts_df) <- c("drugbank_id", "salt_name")
+salts_df$drugbank_id <- as.character(salts_df$drugbank_id)
+salts_df$salt_name <- collapse_ws(salts_df$salt_name)
+salts_df <- filter_excluded(salts_df)
+salts_df <- salts_df[!is.na(salts_df$salt_name) & nzchar(salts_df$salt_name), , drop = FALSE]
+salts_split <- split(salts_df$salt_name, salts_df$drugbank_id)
+salts_lookup <- lapply(salts_split, function(vals) unique_canonical(vals))
 
 if (!file.exists(generics_master_path)) {
   stop("Generics master not found at ", generics_master_path)
 }
-generics_dt <- fread(generics_master_path, na.strings = c("", "NA"))
-if (!all(c("drugbank_id", "lexeme", "generic_components_key") %chin% names(generics_dt))) {
+generics_df <- pl$read_parquet(generics_master_path)$to_r()
+required_generics_cols <- c("drugbank_id", "lexeme", "generic_components_key")
+if (!all(required_generics_cols %in% names(generics_df))) {
   stop("Generics master missing required columns.")
 }
-generics_dt[, drugbank_id := as.character(drugbank_id)]
-generics_dt[, lexeme_key := normalize_lexeme_key(lexeme)]
-generics_lexeme_dt <- generics_dt[!is.na(lexeme_key) & nzchar(lexeme_key)]
-lexeme_map <- split(generics_lexeme_dt$drugbank_id, generics_lexeme_dt$lexeme_key)
+generics_df$drugbank_id <- as.character(generics_df$drugbank_id)
+generics_df$lexeme_key <- normalize_lexeme_key(generics_df$lexeme)
+generics_lexeme_df <- generics_df[!is.na(generics_df$lexeme_key) & nzchar(generics_df$lexeme_key), , drop = FALSE]
+lexeme_map <- split(generics_lexeme_df$drugbank_id, generics_lexeme_df$lexeme_key)
 lexeme_map <- lapply(lexeme_map, unique)
 
-generic_key_by_id <- generics_dt[
-  !is.na(generic_components_key) & nzchar(generic_components_key),
-  .(generic_components_key = generic_components_key[1L]),
-  by = drugbank_id
-]
+valid_generic_keys <- !is.na(generics_df$generic_components_key) & nzchar(generics_df$generic_components_key)
+generic_key_by_id <- generics_df[valid_generic_keys, c("drugbank_id", "generic_components_key"), drop = FALSE]
 generic_key_lookup <- setNames(generic_key_by_id$generic_components_key, generic_key_by_id$drugbank_id)
 
-mixtures_dt <- as.data.table(dataset$drugs$mixtures)[
-  , .(
-    mixture_drugbank_id = as.character(drugbank_id),
-    mixture_name = collapse_ws(name),
-    ingredients_raw = collapse_ws(ingredients)
-  )
-]
-mixtures_dt <- filter_excluded(mixtures_dt, "mixture_drugbank_id")
-mixtures_dt <- mixtures_dt[!(is.na(mixture_name) & is.na(ingredients_raw))]
-mixtures_dt[, mixture_name_key := normalize_lexeme_key(mixture_name)]
-raw_components_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), split_raw_components)
+mixtures_df <- data.frame(
+  mixture_drugbank_id = as.character(dataset$drugs$mixtures$drugbank_id),
+  mixture_name = collapse_ws(dataset$drugs$mixtures$name),
+  ingredients_raw = collapse_ws(dataset$drugs$mixtures$ingredients),
+  stringsAsFactors = FALSE
+)
+mixtures_df <- filter_excluded(mixtures_df, "mixture_drugbank_id")
+mixtures_df <- mixtures_df[!(is.na(mixtures_df$mixture_name) & is.na(mixtures_df$ingredients_raw)), , drop = FALSE]
+mixtures_df$mixture_name_key <- normalize_lexeme_key(mixtures_df$mixture_name)
+raw_components_list <- parallel_lapply(as.list(mixtures_df$ingredients_raw), split_raw_components)
 raw_components_char <- unlist(parallel_lapply(raw_components_list, function(vec) {
   if (!length(vec)) return(NA_character_)
   paste(vec, collapse = " ; ")
 }), use.names = FALSE)
-mixtures_dt[, component_raw_segments := raw_components_char]
-ingredients_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), split_ingredients)
-mixtures_dt[, ingredient_components_vec := ingredients_list]
+mixtures_df$component_raw_segments <- raw_components_char
+ingredients_list <- parallel_lapply(as.list(mixtures_df$ingredients_raw), split_ingredients)
+mixtures_df$ingredient_components_vec <- ingredients_list
 ingredient_components_char <- unlist(parallel_lapply(ingredients_list, function(vec) {
   if (!length(vec)) return(NA_character_)
   paste(vec, collapse = "; ")
 }), use.names = FALSE)
-mixtures_dt[, ingredient_components := ingredient_components_char]
+mixtures_df$ingredient_components <- ingredient_components_char
 ingredient_components_key_char <- unlist(parallel_lapply(ingredients_list, function(vec) {
   if (!length(vec)) return(NA_character_)
   keys <- unique(normalize_lexeme_key(vec))
@@ -404,7 +393,7 @@ ingredient_components_key_char <- unlist(parallel_lapply(ingredients_list, funct
   if (!length(keys)) return(NA_character_)
   paste(sort(keys), collapse = "||")
 }), use.names = FALSE)
-mixtures_dt[, ingredient_components_key := ingredient_components_key_char]
+mixtures_df$ingredient_components_key <- ingredient_components_key_char
 
 resolve_component_ids <- function(vec) {
   if (is.null(vec) || !length(vec)) return(character())
@@ -418,39 +407,39 @@ resolve_component_ids <- function(vec) {
   unique(ids)
 }
 
-component_ids_list <- parallel_lapply(mixtures_dt$ingredient_components_vec, resolve_component_ids)
-mixtures_dt[, component_ids_list := component_ids_list]
+component_ids_list <- parallel_lapply(mixtures_df$ingredient_components_vec, resolve_component_ids)
+mixtures_df$component_ids_list <- component_ids_list
 component_generic_keys_list <- parallel_lapply(component_ids_list, function(ids) {
   if (!length(ids)) return(character())
   vals <- unique(generic_key_lookup[ids])
   vals <- vals[!is.na(vals) & nzchar(vals)]
   unique(vals)
 })
-mixtures_dt[, component_generic_keys_list := component_generic_keys_list]
-component_lexemes_char <- unlist(parallel_lapply(mixtures_dt$ingredient_components_vec, collapse_pipe), use.names = FALSE)
-mixtures_dt[, component_lexemes := component_lexemes_char]
+mixtures_df$component_generic_keys_list <- component_generic_keys_list
+component_lexemes_char <- unlist(parallel_lapply(mixtures_df$ingredient_components_vec, collapse_pipe), use.names = FALSE)
+mixtures_df$component_lexemes <- component_lexemes_char
 component_drugbank_ids_char <- unlist(parallel_lapply(component_ids_list, collapse_pipe), use.names = FALSE)
-mixtures_dt[, component_drugbank_ids := component_drugbank_ids_char]
+mixtures_df$component_drugbank_ids <- component_drugbank_ids_char
 component_generic_keys_char <- unlist(parallel_lapply(component_generic_keys_list, collapse_pipe), use.names = FALSE)
-mixtures_dt[, component_generic_keys := component_generic_keys_char]
+mixtures_df$component_generic_keys <- component_generic_keys_char
 
-groups_char <- unlist(parallel_lapply(as.list(mixtures_dt$mixture_drugbank_id), function(id) {
+groups_char <- unlist(parallel_lapply(as.list(mixtures_df$mixture_drugbank_id), function(id) {
   vals <- groups_lookup[[id]]
   if (is.null(vals)) return(NA_character_)
   collapse_pipe(vals)
 }), use.names = FALSE)
-mixtures_dt[, groups := groups_char]
+mixtures_df$groups <- groups_char
 
-salt_names_char <- unlist(parallel_lapply(as.list(mixtures_dt$mixture_drugbank_id), function(id) {
+salt_names_char <- unlist(parallel_lapply(as.list(mixtures_df$mixture_drugbank_id), function(id) {
   vals <- salts_lookup[[id]]
   if (is.null(vals)) return(NA_character_)
   collapse_pipe(expand_salt_set(vals))
 }), use.names = FALSE)
-mixtures_dt[, salt_names := salt_names_char]
-mixtures_dt[, c("ingredient_components_vec", "component_ids_list", "component_generic_keys_list") := NULL]
+mixtures_df$salt_names <- salt_names_char
+mixtures_df$mixture_id <- seq_len(nrow(mixtures_df))
+mixtures_df <- mixtures_df[, !(names(mixtures_df) %in% c("ingredient_components_vec", "component_ids_list", "component_generic_keys_list")), drop = FALSE]
 
-mixtures_dt[, mixture_id := .I]
-setcolorder(mixtures_dt, c(
+mixtures_df <- mixtures_df[, c(
   "mixture_id",
   "mixture_drugbank_id",
   "mixture_name",
@@ -464,17 +453,17 @@ setcolorder(mixtures_dt, c(
   "component_generic_keys",
   "groups",
   "salt_names"
-))
+)]
 
-setorder(mixtures_dt, mixture_name_key, mixture_drugbank_id, mixture_id)
+mixtures_df <- mixtures_df[order(mixtures_df$mixture_name_key, mixtures_df$mixture_drugbank_id, mixtures_df$mixture_id), , drop = FALSE]
 
-write_csv_and_parquet(mixtures_dt, mixtures_output_path)
+write_csv_and_parquet(mixtures_df, mixtures_output_path)
 
-cat(sprintf("Wrote %d rows to %s\n", nrow(mixtures_dt), mixtures_output_path))
-if (!quiet_mode) {
-  cat("Sample rows:\n")
-  print(head(mixtures_dt, 5))
-}
+  cat(sprintf("Wrote %d rows to %s\n", nrow(mixtures_df), mixtures_output_path))
+  if (!quiet_mode) {
+    cat("Sample rows:\n")
+    print(head(mixtures_df, 5))
+  }
 
 if (!is.null(plan_reset)) {
   try(future::plan(future::sequential), silent = TRUE)

@@ -14,6 +14,7 @@ suppressWarnings({
     }
     ensure_installed("data.table")
     ensure_installed("dbdataset")
+    ensure_installed("polars")
   })
 })
 
@@ -23,6 +24,7 @@ tryCatch({
 
 library(data.table)
 library(dbdataset)
+library(polars)
 
 argv <- commandArgs(trailingOnly = TRUE)
 keep_all_flag <- "--keep-all" %in% argv
@@ -1111,19 +1113,10 @@ final_dt <- combo_dt[, .(
 )]
 
 write_csv_and_parquet <- function(dt, csv_path) {
-  if (!requireNamespace("arrow", quietly = TRUE)) {
-    stop("arrow package is required for Parquet export.")
-  }
-  arrow_table <- arrow::Table$create(dt)
-  if ("write_csv_arrow" %chin% getNamespaceExports("arrow")) {
-    arrow::write_csv_arrow(arrow_table, csv_path)
-  } else if ("write_delim_arrow" %chin% getNamespaceExports("arrow")) {
-    arrow::write_delim_arrow(arrow_table, csv_path, delim = ",")
-  } else {
-    data.table::fwrite(dt, csv_path)
-  }
+  df <- as.data.frame(dt)
   parquet_path <- sub("\\.csv$", ".parquet", csv_path)
-  arrow::write_parquet(arrow_table, parquet_path)
+  pl$DataFrame(df)$write_parquet(parquet_path)
+  pl$DataFrame(df)$write_csv(csv_path)
   parquet_path
 }
 
