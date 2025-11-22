@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
-# Legacy entrypoint kept for compatibility; delegates to polars-based pipeline.
+# Legacy entrypoint kept for compatibility; delegates to the tidypolars (polars backend) pipeline.
 
-message("drugbank.R is deprecated; running drugbank_all.R (polars-first).")
+message("drugbank.R is deprecated; running drugbank_all.R (tidypolars backend).")
 
 get_script_dir <- function() {
   args <- commandArgs(trailingOnly = FALSE)

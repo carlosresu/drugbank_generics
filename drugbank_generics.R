@@ -7,18 +7,29 @@
 
 suppressWarnings({
   suppressPackageStartupMessages({
-    ensure_installed <- function(pkg) {
+    ensure_installed <- function(pkg, repos = "https://cloud.r-project.org") {
       if (!requireNamespace(pkg, quietly = TRUE)) {
-        install.packages(pkg, repos = "https://cloud.r-project.org")
+        install.packages(pkg, repos = repos)
       }
     }
-    ensure_installed("polars")
+    install_tidypolars <- function() {
+      if (!requireNamespace("tidypolars", quietly = TRUE)) {
+        Sys.setenv(NOT_CRAN = "true")
+        install.packages(
+          "tidypolars",
+          repos = c("https://community.r-multiverse.org", "https://cloud.r-project.org")
+        )
+      }
+    }
+    install_tidypolars()
     ensure_installed("dbdataset")
   })
 })
 
 suppressPackageStartupMessages({
-  library(polars)
+  library(tidypolars)
+  library(dplyr, warn.conflicts = FALSE)
+  library(tidyr, warn.conflicts = FALSE)
   library(dbdataset)
 })
 
@@ -640,107 +651,129 @@ output_master_csv <- file.path(output_dir, "drugbank_generics_master.csv")
 
 dataset <- drugbank
 
-groups_df <- pl$DataFrame(dataset$drugs$groups)$with_columns(
-  pl$col("drugbank_id")$cast(pl$Utf8),
-  group_clean = pl$col("group")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$Utf8)
-)
-excluded_ids <- groups_df$filter(pl$col("group_clean") == "vet")$get_column("drugbank_id")$unique()$to_r()
+groups_df <- as_polars_df(dataset$drugs$groups) |>
+  mutate(
+    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+    group_clean = pl$col("group")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$String)
+  )
+excluded_ids <- groups_df |>
+  filter(pl$col("group_clean") == "vet") |>
+  pull("drugbank_id") |>
+  unique() |>
+  to_r()
 
 filter_excluded <- function(df, id_col = "drugbank_id") {
   if (!length(excluded_ids)) return(df)
-  df$filter(!pl$col(id_col)$is_in(excluded_ids))
+  dplyr::filter(df, !pl$col(id_col)$is_in(excluded_ids))
 }
 
-general_df <- pl$DataFrame(dataset$drugs$general_information)$select(
-  drugbank_id = pl$col("drugbank_id")$cast(pl$Utf8),
-  canonical_generic_name = pl$col("name")$map_elements(collapse_ws, return_dtype = pl$Utf8)
-)
-general_df <- filter_excluded(general_df)
-general_df <- general_df$filter(pl$col("canonical_generic_name")$is_not_null() & pl$col("canonical_generic_name") != "")
-general_df <- general_df$with_columns(
-  generic_components_raw = pl$col("canonical_generic_name")$map_elements(split_ingredients, return_dtype = pl$List(pl$Utf8))
-)
-general_df <- general_df$with_columns(
-  generic_components = pl$col("generic_components_raw")$map_elements(
-    function(vec) {
-      if (!length(vec)) return(NA_character_)
-      paste(vec, collapse = "; ")
-    },
-    return_dtype = pl$Utf8
-  ),
-  generic_components_key = pl$col("generic_components_raw")$map_elements(
-    function(vec) {
-      if (!length(vec)) return(NA_character_)
-      canon <- tolower(trimws(gsub("\\s+", " ", vec)))
-      canon <- canon[nzchar(canon)]
-      if (!length(canon)) return(NA_character_)
-      paste(sort(canon), collapse = "||")
-    },
-    return_dtype = pl$Utf8
-  )
-)$select(-"generic_components_raw")
+general_df <- as_polars_df(dataset$drugs$general_information) |>
+  mutate(
+    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+    canonical_generic_name = pl$col("name")$map_elements(collapse_ws, return_dtype = pl$String)
+  ) |>
+  select(drugbank_id, canonical_generic_name) |>
+  filter_excluded() |>
+  filter(pl$col("canonical_generic_name")$is_not_null() & pl$col("canonical_generic_name") != "") |>
+  mutate(
+    generic_components_raw = pl$col("canonical_generic_name")$map_elements(split_ingredients, return_dtype = pl$List(pl$String))
+  ) |>
+  mutate(
+    generic_components = pl$col("generic_components_raw")$map_elements(
+      function(vec) {
+        if (!length(vec)) return(NA_character_)
+        paste(vec, collapse = "; ")
+      },
+      return_dtype = pl$String
+    ),
+    generic_components_key = pl$col("generic_components_raw")$map_elements(
+      function(vec) {
+        if (!length(vec)) return(NA_character_)
+        canon <- tolower(trimws(gsub("\\s+", " ", vec)))
+        canon <- canon[nzchar(canon)]
+        if (!length(canon)) return(NA_character_)
+        paste(sort(canon), collapse = "||")
+      },
+      return_dtype = pl$String
+    )
+  ) |>
+  select(-generic_components_raw)
 
 allowed_synonym_coders <- c("inn", "usan", "ban", "jan", "dcj", "usp", "dcit")
-syn_df <- pl$DataFrame(dataset$drugs$synonyms)$with_columns(
-  drugbank_id = pl$col("drugbank_id")$cast(pl$Utf8),
-  synonym = pl$col("synonym")$map_elements(collapse_ws, return_dtype = pl$Utf8),
-  language = pl$col("language")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$Utf8),
-  coder = pl$col("coder")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$Utf8)
-)
-syn_df <- filter_excluded(syn_df)
-syn_df <- syn_df$filter(
-  pl$col("synonym")$is_not_null() & pl$col("synonym") != "" &
-    pl$col("language")$is_not_null() & pl$col("language")$str$contains("english") &
-    pl$col("coder")$is_not_null()
-)
-syn_df <- syn_df$with_columns(
-  coder_tokens = pl$col("coder")$map_elements(split_coder_tokens, return_dtype = pl$List(pl$Utf8))
-)
-syn_df <- syn_df$with_columns(
-  has_allowed = pl$col("coder_tokens")$map_elements(
-    function(vals) length(vals) > 0 && any(vals %in% allowed_synonym_coders),
-    return_dtype = pl$Boolean
-  ),
-  only_iupac = pl$col("coder_tokens")$map_elements(
-    function(vals) length(vals) > 0 && all(vals == "iupac"),
-    return_dtype = pl$Boolean
+syn_df <- as_polars_df(dataset$drugs$synonyms) |>
+  mutate(
+    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+    synonym = pl$col("synonym")$map_elements(collapse_ws, return_dtype = pl$String),
+    language = pl$col("language")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$String),
+    coder = pl$col("coder")$map_elements(function(x) tolower(trimws(x)), return_dtype = pl$String)
+  ) |>
+  filter_excluded() |>
+  filter(
+    pl$col("synonym")$is_not_null() & pl$col("synonym") != "" &
+      pl$col("language")$is_not_null() & pl$col("language")$str$contains("english") &
+      pl$col("coder")$is_not_null()
+  ) |>
+  mutate(
+    coder_tokens = pl$col("coder")$map_elements(split_coder_tokens, return_dtype = pl$List(pl$String))
+  ) |>
+  mutate(
+    has_allowed = pl$col("coder_tokens")$map_elements(
+      function(vals) length(vals) > 0 && any(vals %in% allowed_synonym_coders),
+      return_dtype = pl$Boolean
+    ),
+    only_iupac = pl$col("coder_tokens")$map_elements(
+      function(vals) length(vals) > 0 && all(vals == "iupac"),
+      return_dtype = pl$Boolean
+    )
+  ) |>
+  filter(pl$col("has_allowed") & !pl$col("only_iupac")) |>
+  select("drugbank_id", "synonym") |>
+  group_by(drugbank_id) |>
+  summarise(synonyms_raw = pl$col("synonym")) |>
+  mutate(
+    synonyms_list = pl$col("synonyms_raw")$map_elements(unique_canonical, return_dtype = pl$List(pl$String))
+  ) |>
+  select("drugbank_id", "synonyms_list")
+
+atc_df <- as_polars_df(dataset$drugs$atc_codes) |>
+  mutate(
+    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+    atc_code = pl$col("atc_code")$map_elements(trimws, return_dtype = pl$String)
+  ) |>
+  select(drugbank_id, atc_code) |>
+  filter_excluded() |>
+  filter(pl$col("atc_code")$is_not_null() & pl$col("atc_code") != "") |>
+  group_by(drugbank_id) |>
+  summarise(atc_codes_list = pl$col("atc_code")) |>
+  mutate(
+    atc_codes_list = pl$col("atc_codes_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$String))
   )
-)$filter(pl$col("has_allowed") & !pl$col("only_iupac"))$select("drugbank_id", "synonym")
-syn_df <- syn_df$group_by("drugbank_id")$agg(pl$col("synonym")$alias("synonyms_raw"))
-syn_df <- syn_df$with_columns(
-  synonyms_list = pl$col("synonyms_raw")$map_elements(unique_canonical, return_dtype = pl$List(pl$Utf8))
-)$select("drugbank_id", "synonyms_list")
 
-atc_df <- pl$DataFrame(dataset$drugs$atc_codes)$select(
-  drugbank_id = pl$col("drugbank_id")$cast(pl$Utf8),
-  atc_code = pl$col("atc_code")$map_elements(trimws, return_dtype = pl$Utf8)
-)
-atc_df <- filter_excluded(atc_df)
-atc_df <- atc_df$filter(pl$col("atc_code")$is_not_null() & pl$col("atc_code") != "")
-atc_df <- atc_df$group_by("drugbank_id")$agg(pl$col("atc_code")$alias("atc_codes_list"))
-atc_df <- atc_df$with_columns(
-  atc_codes_list = pl$col("atc_codes_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$Utf8))
-)
+groups_clean <- groups_df |>
+  filter(
+    !pl$col("drugbank_id")$is_in(excluded_ids) &
+      pl$col("group_clean")$is_not_null() &
+      pl$col("group_clean") != ""
+  ) |>
+  group_by(drugbank_id) |>
+  summarise(groups_list = pl$col("group_clean")) |>
+  mutate(
+    groups_list = pl$col("groups_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$String))
+  )
 
-groups_clean <- groups_df$filter(
-  !pl$col("drugbank_id")$is_in(excluded_ids) &
-    pl$col("group_clean")$is_not_null() &
-    pl$col("group_clean") != ""
-)$group_by("drugbank_id")$agg(pl$col("group_clean")$alias("groups_list"))
-groups_clean <- groups_clean$with_columns(
-  groups_list = pl$col("groups_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$Utf8))
-)
-
-salts_df <- pl$DataFrame(dataset$salts)$select(
-  drugbank_id = pl$col("drugbank_id")$cast(pl$Utf8),
-  salt_name = pl$col("name")$map_elements(collapse_ws, return_dtype = pl$Utf8)
-)
-salts_df <- filter_excluded(salts_df)
-salts_df <- salts_df$filter(pl$col("salt_name")$is_not_null() & pl$col("salt_name") != "")
-salts_df <- salts_df$group_by("drugbank_id")$agg(pl$col("salt_name")$alias("salt_names_list"))
-salts_df <- salts_df$with_columns(
-  salt_names_list = pl$col("salt_names_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$Utf8))
-)
+salts_df <- as_polars_df(dataset$salts) |>
+  mutate(
+    drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+    salt_name = pl$col("name")$map_elements(collapse_ws, return_dtype = pl$String)
+  ) |>
+  select(drugbank_id, salt_name) |>
+  filter_excluded() |>
+  filter(pl$col("salt_name")$is_not_null() & pl$col("salt_name") != "") |>
+  group_by(drugbank_id) |>
+  summarise(salt_names_list = pl$col("salt_name")) |>
+  mutate(
+    salt_names_list = pl$col("salt_names_list")$map_elements(unique_canonical, return_dtype = pl$List(pl$String))
+  )
 
 process_source <- function(df) {
   if (is.null(df) || df$height() == 0) {
@@ -759,71 +792,72 @@ process_source <- function(df) {
       raw_dose = character()
     )))
   }
-  df <- filter_excluded(df)
-  df <- df$with_columns(
-    pl$col("route_raw")$map_elements(collapse_ws, return_dtype = pl$Utf8),
-    pl$col("form_raw")$map_elements(collapse_ws, return_dtype = pl$Utf8),
-    pl$col("dose_raw")$map_elements(collapse_ws, return_dtype = pl$Utf8)
-  )
-  df <- df$with_columns(
-    raw_route_original = pl$col("route_raw"),
-    raw_form_original = pl$col("form_raw"),
-    raw_route_details = pl$col("route_raw")$map_elements(clean_form_route_detail, return_dtype = pl$Utf8),
-    raw_form_details = pl$col("form_raw")$map_elements(clean_form_route_detail, return_dtype = pl$Utf8),
-    route_raw = pl$col("route_raw")$map_elements(clean_form_route_base, return_dtype = pl$Utf8),
-    form_raw = pl$col("form_raw")$map_elements(clean_form_route_base, return_dtype = pl$Utf8)
-  )
-  df <- df$with_columns(
-    route_norm_list = pl$col("route_raw")$map_elements(normalize_route_entry, return_dtype = pl$List(pl$Utf8)),
-    form_norm_list = pl$col("form_raw")$map_elements(normalize_form_value, return_dtype = pl$List(pl$Utf8)),
-    dose_norm = pl$col("dose_raw")$map_elements(normalize_dose_value, return_dtype = pl$Utf8),
-    raw_dose = pl$col("dose_raw")
-  )
-  df <- df$with_columns(
-    route_norm_list = pl$col("route_norm_list")$map_elements(
-      function(vals) {
-        vals <- unique_canonical(vals)
-        if (!length(vals)) return(list(NA_character_))
-        vals
-      },
-      return_dtype = pl$List(pl$Utf8)
-    ),
-    form_norm_list = pl$col("form_norm_list")$map_elements(
-      function(vals) {
-        vals <- unique_canonical(vals)
-        if (!length(vals)) return(list(NA_character_))
-        vals
-      },
-      return_dtype = pl$List(pl$Utf8)
+  df |>
+    filter_excluded() |>
+    mutate(
+      route_raw = pl$col("route_raw")$map_elements(collapse_ws, return_dtype = pl$String),
+      form_raw = pl$col("form_raw")$map_elements(collapse_ws, return_dtype = pl$String),
+      dose_raw = pl$col("dose_raw")$map_elements(collapse_ws, return_dtype = pl$String)
+    ) |>
+    mutate(
+      raw_route_original = pl$col("route_raw"),
+      raw_form_original = pl$col("form_raw"),
+      raw_route_details = pl$col("route_raw")$map_elements(clean_form_route_detail, return_dtype = pl$String),
+      raw_form_details = pl$col("form_raw")$map_elements(clean_form_route_detail, return_dtype = pl$String),
+      route_raw = pl$col("route_raw")$map_elements(clean_form_route_base, return_dtype = pl$String),
+      form_raw = pl$col("form_raw")$map_elements(clean_form_route_base, return_dtype = pl$String)
+    ) |>
+    mutate(
+      route_norm_list = pl$col("route_raw")$map_elements(normalize_route_entry, return_dtype = pl$List(pl$String)),
+      form_norm_list = pl$col("form_raw")$map_elements(normalize_form_value, return_dtype = pl$List(pl$String)),
+      dose_norm = pl$col("dose_raw")$map_elements(normalize_dose_value, return_dtype = pl$String),
+      raw_dose = pl$col("dose_raw")
+    ) |>
+    mutate(
+      route_norm_list = pl$col("route_norm_list")$map_elements(
+        function(vals) {
+          vals <- unique_canonical(vals)
+          if (!length(vals)) return(list(NA_character_))
+          vals
+        },
+        return_dtype = pl$List(pl$String)
+      ),
+      form_norm_list = pl$col("form_norm_list")$map_elements(
+        function(vals) {
+          vals <- unique_canonical(vals)
+          if (!length(vals)) return(list(NA_character_))
+          vals
+        },
+        return_dtype = pl$List(pl$String)
+      )
+    ) |>
+    mutate(
+      form_norm = pl$col("form_norm_list")$map_elements(
+        function(vals) {
+          vals <- vals[!is.na(vals)]
+          if (!length(vals)) return(NA_character_)
+          vals[[1]]
+        },
+        return_dtype = pl$String
+      ),
+      dose_norm = pl$col("dose_norm")$map_elements(
+        function(x) if (is.na(x) || x == "") NA_character_ else x,
+        return_dtype = pl$String
+      )
     )
-  )
-  df <- df$with_columns(
-    form_norm = pl$col("form_norm_list")$map_elements(
-      function(vals) {
-        vals <- vals[!is.na(vals)]
-        if (!length(vals)) return(NA_character_)
-        vals[[1]]
-      },
-      return_dtype = pl$Utf8
-    )
-  )
-  df$with_columns(
-    dose_norm = pl$col("dose_norm")$map_elements(
-      function(x) if (is.na(x) || x == "") NA_character_ else x,
-      return_dtype = pl$Utf8
-    )
-  )
 }
 
 if (length(dataset$drugs$dosages)) {
-  dosages_raw <- pl$DataFrame(dataset$drugs$dosages)$select(
-    drugbank_id = pl$col("drugbank_id")$cast(pl$Utf8),
-    route_raw = pl$col("route"),
-    form_raw = pl$col("form"),
-    dose_raw = pl$col("strength")
-  )
+  dosages_raw <- as_polars_df(dataset$drugs$dosages) |>
+    mutate(
+      drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+      route_raw = pl$col("route"),
+      form_raw = pl$col("form"),
+      dose_raw = pl$col("strength")
+    ) |>
+    select(drugbank_id, route_raw, form_raw, dose_raw)
 } else {
-  dosages_raw <- pl$DataFrame(list(
+  dosages_raw <- as_polars_df(list(
     drugbank_id = character(),
     route_raw = character(),
     form_raw = character(),
@@ -833,14 +867,16 @@ if (length(dataset$drugs$dosages)) {
 dosages_proc <- process_source(dosages_raw)
 
 if (length(dataset$products)) {
-  products_raw <- pl$DataFrame(dataset$products)$select(
-    drugbank_id = pl$col("drugbank_id")$cast(pl$Utf8),
-    route_raw = pl$col("route"),
-    form_raw = pl$col("dosage_form"),
-    dose_raw = pl$col("strength")
-  )
+  products_raw <- as_polars_df(dataset$products) |>
+    mutate(
+      drugbank_id = pl$col("drugbank_id")$cast(pl$String),
+      route_raw = pl$col("route"),
+      form_raw = pl$col("dosage_form"),
+      dose_raw = pl$col("strength")
+    ) |>
+    select(drugbank_id, route_raw, form_raw, dose_raw)
 } else {
-  products_raw <- pl$DataFrame(list(
+  products_raw <- as_polars_df(list(
     drugbank_id = character(),
     route_raw = character(),
     form_raw = character(),
@@ -849,7 +885,7 @@ if (length(dataset$products)) {
 }
 products_proc <- process_source(products_raw)
 
-combined <- pl$concat(list(dosages_proc, products_proc), how = "vertical")
+combined <- bind_rows_polars(dosages_proc, products_proc)
 combined_r <- combined$to_r()
 
 disallowed_pairs <- collect_disallowed_pairs(combined_r)
@@ -914,114 +950,124 @@ if (!nrow(combo_base)) {
   stop("No real combinations found in DrugBank data.")
 }
 
-combo_df <- pl$DataFrame(combo_base)
-distinct_ids <- combo_df$select("drugbank_id")$unique()$get_column("drugbank_id")$to_r()
+combo_df <- as_polars_df(combo_base)
+distinct_ids <- combo_df |>
+  distinct(drugbank_id) |>
+  pull("drugbank_id") |>
+  to_r()
 
-empty_atc_list <- pl$lit(list())$cast(pl$List(pl$Utf8))
-atc_map <- pl$DataFrame(list(drugbank_id = distinct_ids))$join(atc_df, on = "drugbank_id", how = "left")
-atc_map <- atc_map$with_columns(
-  atc_codes_list = pl$when(pl$col("atc_codes_list")$is_null())$then(empty_atc_list)$otherwise(pl$col("atc_codes_list"))
-)
+empty_atc_list <- pl$lit(list())$cast(pl$List(pl$String))
+atc_map <- as_polars_df(list(drugbank_id = distinct_ids)) |>
+  left_join(atc_df, by = "drugbank_id") |>
+  mutate(
+    atc_codes_list = pl$when(pl$col("atc_codes_list")$is_null())$then(empty_atc_list)$otherwise(pl$col("atc_codes_list"))
+  )
 atc_long <- atc_map$explode("atc_codes_list")$rename(list(atc_codes_list = "atc_code"))
 
-name_df <- general_df$join(syn_df, on = "drugbank_id", how = "left")$with_columns(
-  synonyms_list = pl$when(pl$col("synonyms_list")$is_null())$then(pl$lit(list())$cast(pl$List(pl$Utf8)))$otherwise(pl$col("synonyms_list"))
-)
-name_df <- name_df$with_columns(
-  lexeme_list = pl$struct(c("canonical_generic_name", "synonyms_list"))$map_elements(
-    function(s) {
-      canonical <- s$canonical_generic_name
-      syns <- s$synonyms_list
-      vals <- unique_canonical(c(canonical, syns))
-      if (!length(vals)) return(list(canonical))
-      vals
-    },
-    return_dtype = pl$List(pl$Utf8)
+name_df <- general_df |>
+  left_join(syn_df, by = "drugbank_id") |>
+  mutate(
+    synonyms_list = pl$when(pl$col("synonyms_list")$is_null())$then(pl$lit(list())$cast(pl$List(pl$String)))$otherwise(pl$col("synonyms_list"))
+  ) |>
+  mutate(
+    lexeme_list = pl$struct(c("canonical_generic_name", "synonyms_list"))$map_elements(
+      function(s) {
+        canonical <- s$canonical_generic_name
+        syns <- s$synonyms_list
+        vals <- unique_canonical(c(canonical, syns))
+        if (!length(vals)) return(list(canonical))
+        vals
+      },
+      return_dtype = pl$List(pl$String)
+    )
   )
-)
 
-combo_dt <- combo_df$join(atc_long, on = "drugbank_id", how = "left")
-combo_dt <- combo_dt$join(
-  name_df$select("drugbank_id", "canonical_generic_name", "generic_components", "generic_components_key", "lexeme_list"),
-  on = "drugbank_id",
-  how = "left"
-)
-combo_dt <- combo_dt$join(salts_df, on = "drugbank_id", how = "left")
-combo_dt <- combo_dt$with_columns(
-  salt_names_list = pl$when(pl$col("salt_names_list")$is_null())$then(pl$lit(list())$cast(pl$List(pl$Utf8)))$otherwise(pl$col("salt_names_list")),
-  salt_names = pl$col("salt_names_list")$map_elements(function(lst) collapse_pipe(expand_salt_set(lst)), return_dtype = pl$Utf8)
-)$select(-"salt_names_list")
-
-combo_dt <- combo_dt$join(groups_clean, on = "drugbank_id", how = "left")
-combo_dt <- combo_dt$with_columns(
-  groups_list = pl$when(pl$col("groups_list")$is_null())$then(pl$lit(list())$cast(pl$List(pl$Utf8)))$otherwise(pl$col("groups_list")),
-  groups = pl$col("groups_list")$map_elements(collapse_pipe, return_dtype = pl$Utf8)
-)$select(-"groups_list")
-
-combo_dt <- combo_dt$with_columns(
-  lexeme_list = pl$when(pl$col("lexeme_list")$is_null())$then(
-    pl$col("canonical_generic_name")$map_elements(function(x) list(x), return_dtype = pl$List(pl$Utf8))
-  )$otherwise(pl$col("lexeme_list"))
-)
+combo_dt <- combo_df |>
+  left_join(atc_long, by = "drugbank_id") |>
+  left_join(
+    name_df |>
+      select("drugbank_id", "canonical_generic_name", "generic_components", "generic_components_key", "lexeme_list"),
+    by = "drugbank_id"
+  ) |>
+  left_join(salts_df, by = "drugbank_id") |>
+  mutate(
+    salt_names_list = pl$when(pl$col("salt_names_list")$is_null())$then(pl$lit(list())$cast(pl$List(pl$String)))$otherwise(pl$col("salt_names_list")),
+    salt_names = pl$col("salt_names_list")$map_elements(function(lst) collapse_pipe(expand_salt_set(lst)), return_dtype = pl$String)
+  ) |>
+  select(-salt_names_list) |>
+  left_join(groups_clean, by = "drugbank_id") |>
+  mutate(
+    groups_list = pl$when(pl$col("groups_list")$is_null())$then(pl$lit(list())$cast(pl$List(pl$String)))$otherwise(pl$col("groups_list")),
+    groups = pl$col("groups_list")$map_elements(collapse_pipe, return_dtype = pl$String)
+  ) |>
+  select(-groups_list) |>
+  mutate(
+    lexeme_list = pl$when(pl$col("lexeme_list")$is_null())$then(
+      pl$col("canonical_generic_name")$map_elements(function(x) list(x), return_dtype = pl$List(pl$String))
+    )$otherwise(pl$col("lexeme_list"))
+  )
 combo_dt <- combo_dt$explode("lexeme_list")$rename(list(lexeme_list = "lexeme"))
 
-combo_dt <- combo_dt$with_columns(
-  dose_synonyms = pl$struct(c("dose_norm", "raw_dose"))$map_elements(
-    function(x) collapse_pipe(expand_dose_set(x$dose_norm, x$raw_dose)),
-    return_dtype = pl$Utf8
-  ),
-  form_synonyms = pl$struct(c("form_norm", "raw_form"))$map_elements(
-    function(x) collapse_pipe(expand_value_set(x$form_norm, x$raw_form, FORM_SYNONYM_LOOKUP)),
-    return_dtype = pl$Utf8
-  ),
-  route_synonyms = pl$struct(c("route_norm", "raw_route"))$map_elements(
-    function(x) collapse_pipe(expand_value_set(x$route_norm, x$raw_route, ROUTE_SYNONYM_LOOKUP)),
-    return_dtype = pl$Utf8
+combo_dt <- combo_dt |>
+  mutate(
+    dose_synonyms = pl$struct(c("dose_norm", "raw_dose"))$map_elements(
+      function(x) collapse_pipe(expand_dose_set(x$dose_norm, x$raw_dose)),
+      return_dtype = pl$String
+    ),
+    form_synonyms = pl$struct(c("form_norm", "raw_form"))$map_elements(
+      function(x) collapse_pipe(expand_value_set(x$form_norm, x$raw_form, FORM_SYNONYM_LOOKUP)),
+      return_dtype = pl$String
+    ),
+    route_synonyms = pl$struct(c("route_norm", "raw_route"))$map_elements(
+      function(x) collapse_pipe(expand_value_set(x$route_norm, x$raw_route, ROUTE_SYNONYM_LOOKUP)),
+      return_dtype = pl$String
+    )
   )
-)
 
-final_df <- combo_dt$select(
-  "drugbank_id",
-  "lexeme",
-  "canonical_generic_name",
-  "generic_components",
-  "generic_components_key",
-  "dose_norm",
-  "raw_dose",
-  "dose_synonyms",
-  "form_norm",
-  "raw_form",
-  "raw_form_details",
-  "raw_form_original",
-  "form_synonyms",
-  "route_norm",
-  "raw_route",
-  "raw_route_details",
-  "raw_route_original",
-  "route_synonyms",
-  "atc_code",
-  "salt_names",
-  "groups"
-)
+final_df <- combo_dt |>
+  select(
+    "drugbank_id",
+    "lexeme",
+    "canonical_generic_name",
+    "generic_components",
+    "generic_components_key",
+    "dose_norm",
+    "raw_dose",
+    "dose_synonyms",
+    "form_norm",
+    "raw_form",
+    "raw_form_details",
+    "raw_form_original",
+    "form_synonyms",
+    "route_norm",
+    "raw_route",
+    "raw_route_details",
+    "raw_route_original",
+    "route_synonyms",
+    "atc_code",
+    "salt_names",
+    "groups"
+  )
 
 if (!keep_all_flag) {
-  final_df <- final_df$with_columns(
-    approved_flag = pl$col("groups")$str$contains("approved", literal = FALSE),
-    atc_flag = pl$col("atc_code")$is_not_null() & pl$col("atc_code") != ""
-  )$filter(pl$col("approved_flag") | pl$col("atc_flag"))$select(
-    -"approved_flag",
-    -"atc_flag"
-  )
+  final_df <- final_df |>
+    mutate(
+      approved_flag = pl$col("groups")$str$contains("approved", literal = FALSE),
+      atc_flag = pl$col("atc_code")$is_not_null() & pl$col("atc_code") != ""
+    ) |>
+    filter(pl$col("approved_flag") | pl$col("atc_flag")) |>
+    select(-approved_flag, -atc_flag)
 }
 
-final_df <- final_df$sort(c(
-  "canonical_generic_name",
-  "lexeme",
-  "atc_code",
-  "dose_norm",
-  "form_norm",
-  "route_norm"
-))
+final_df <- final_df |>
+  arrange(
+    canonical_generic_name,
+    lexeme,
+    atc_code,
+    dose_norm,
+    form_norm,
+    route_norm
+  )
 
 write_csv_and_parquet(final_df, output_master_csv)
 
@@ -1034,7 +1080,9 @@ if (!quiet_mode) {
 if (exists("disallowed_pairs") && nrow(disallowed_pairs)) {
   disallowed_pairs <- merge(
     disallowed_pairs,
-    name_df$select("drugbank_id", "canonical_generic_name")$to_r(),
+    name_df |>
+      select("drugbank_id", "canonical_generic_name") |>
+      to_r(),
     by = "drugbank_id",
     all.x = TRUE
   )
@@ -1049,6 +1097,6 @@ if (exists("disallowed_pairs") && nrow(disallowed_pairs)) {
     "raw_route_original"
   )
   disallowed_path <- file.path(output_dir, "drugbank_route_form_exclusions.csv")
-  disallowed_df <- pl$DataFrame(disallowed_pairs[, disallowed_cols])
+  disallowed_df <- as_polars_df(disallowed_pairs[, disallowed_cols])
   write_csv_and_parquet(disallowed_df, disallowed_path)
 }
