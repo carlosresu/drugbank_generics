@@ -90,13 +90,37 @@ run_subscript <- function(script_path, env_vars = character()) {
   if (!file.exists(script_path)) {
     stop(sprintf("Required script not found: %s", script_path))
   }
-  env_all <- c(env_vars, sprintf("RSCRIPT_PATH=%s", rscript_bin), sprintf("R_LIBS_USER=%s", opt_lib), sprintf("R_LIBS=%s", lib_env))
+  env_entries <- c(
+    env_vars,
+    sprintf("RSCRIPT_PATH=%s", rscript_bin),
+    sprintf("R_LIBS_USER=%s", opt_lib),
+    sprintf("R_LIBS=%s", lib_env)
+  )
+  entry_names <- names(env_entries)
+  if (is.null(entry_names)) entry_names <- rep("", length(env_entries))
+  split_entries <- strsplit(env_entries, "=", fixed = TRUE)
+  fallback_names <- vapply(split_entries, function(x) if (length(x)) x[[1]] else "", character(1))
+  values <- vapply(
+    seq_along(split_entries),
+    function(i) {
+      parts <- split_entries[[i]]
+      if (length(parts) <= 1) return(env_entries[[i]])
+      paste(parts[-1], collapse = "=")
+    },
+    character(1)
+  )
+  final_names <- ifelse(nzchar(entry_names), entry_names, fallback_names)
+  valid <- !is.na(final_names) & nzchar(final_names)
+  env_all <- structure(values[valid], names = final_names[valid])
+  env_names <- names(env_all)
   # Apply env vars for the subprocess without polluting the parent session.
-  names(env_all) <- sub("=.*$", "", env_all)
-  vals <- sub("^[^=]+=", "", env_all)
-  prior <- Sys.getenv(names(env_all), unset = NA_character_)
-  on.exit({for (i in seq_along(prior)) { if (is.na(prior[i])) Sys.unsetenv(names(env_all)[i]) else Sys.setenv(structure(prior[i], names = names(env_all)[i])) }}, add = TRUE)
-  do.call(Sys.setenv, as.list(structure(vals, names = names(env_all))))
+  prior <- Sys.getenv(env_names, unset = NA_character_)
+  on.exit({
+    for (i in seq_along(prior)) {
+      if (is.na(prior[i])) Sys.unsetenv(env_names[i]) else Sys.setenv(structure(prior[i], names = env_names[i]))
+    }
+  }, add = TRUE)
+  if (length(env_all)) do.call(Sys.setenv, as.list(env_all))
 
   tmp_log <- tempfile("drugbank_subscript_", fileext = ".log")
   status <- system2(rscript_bin, c(script_path), stdout = tmp_log, stderr = tmp_log)
