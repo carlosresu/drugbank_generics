@@ -213,6 +213,26 @@ combine_values <- function(...) {
   unique_canonical(combined)
 }
 
+make_cached_mapper <- function(fun) {
+  cache <- new.env(parent = emptyenv())
+  function(x) {
+    key <- if (length(x) == 0 || is.null(x)) {
+      "<NULL>"
+    } else if (length(x) > 1) {
+      paste0("vec:", paste(as.character(x), collapse = "\u001f"))
+    } else if (is.na(x)) {
+      "<NA>"
+    } else {
+      as.character(x)
+    }
+    hit <- cache[[key]]
+    if (!is.null(hit)) return(hit)
+    res <- fun(x)
+    cache[[key]] <- res
+    res
+  }
+}
+
 split_ingredients <- function(value) {
   val <- collapse_ws(value)
   if (is.na(val) || !nzchar(val)) return(character())
@@ -247,6 +267,9 @@ split_raw_components <- function(value) {
   parts <- collapse_ws(parts)
   parts[nzchar(parts)]
 }
+
+cached_split_ingredients <- make_cached_mapper(split_ingredients)
+cached_split_raw_components <- make_cached_mapper(split_raw_components)
 
 collapse_pipe <- function(values) {
   vals <- unique_canonical(values)
@@ -412,13 +435,13 @@ mixtures_dt <- as.data.table(dataset$drugs$mixtures)[
 mixtures_dt <- filter_excluded(mixtures_dt, "mixture_drugbank_id")
 mixtures_dt <- mixtures_dt[!(is.na(mixture_name) & is.na(ingredients_raw))]
 mixtures_dt[, mixture_name_key := normalize_lexeme_key(mixture_name)]
-raw_components_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), split_raw_components)
+raw_components_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), cached_split_raw_components)
 raw_components_char <- unlist(parallel_lapply(raw_components_list, function(vec) {
   if (!length(vec)) return(NA_character_)
   paste(vec, collapse = " ; ")
 }), use.names = FALSE)
 mixtures_dt[, component_raw_segments := raw_components_char]
-ingredients_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), split_ingredients)
+ingredients_list <- parallel_lapply(as.list(mixtures_dt$ingredients_raw), cached_split_ingredients)
 mixtures_dt[, ingredient_components_vec := ingredients_list]
 ingredient_components_char <- unlist(parallel_lapply(ingredients_list, function(vec) {
   if (!length(vec)) return(NA_character_)
@@ -446,7 +469,9 @@ resolve_component_ids <- function(vec) {
   unique(ids)
 }
 
-component_ids_list <- parallel_lapply(mixtures_dt$ingredient_components_vec, resolve_component_ids)
+cached_resolve_component_ids <- make_cached_mapper(resolve_component_ids)
+
+component_ids_list <- parallel_lapply(mixtures_dt$ingredient_components_vec, cached_resolve_component_ids)
 mixtures_dt[, component_ids_list := component_ids_list]
 component_generic_keys_list <- parallel_lapply(component_ids_list, function(ids) {
   if (!length(ids)) return(character())

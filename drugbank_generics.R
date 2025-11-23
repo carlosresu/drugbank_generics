@@ -324,6 +324,26 @@ collapse_pipe <- function(values) {
   paste(vals, collapse = "|")
 }
 
+make_cached_mapper <- function(fun) {
+  cache <- new.env(parent = emptyenv())
+  function(x) {
+    key <- if (length(x) == 0 || is.null(x)) {
+      "<NULL>"
+    } else if (length(x) > 1) {
+      paste0("vec:", paste(as.character(x), collapse = "\u001f"))
+    } else if (is.na(x)) {
+      "<NA>"
+    } else {
+      as.character(x)
+    }
+    hit <- cache[[key]]
+    if (!is.null(hit)) return(hit)
+    res <- fun(x)
+    cache[[key]] <- res
+    res
+  }
+}
+
 canonical_case_key <- function(value) {
   val <- collapse_ws(value)
   if (is.na(val) || !nzchar(val)) return(NA_character_)
@@ -641,6 +661,10 @@ ALLOWED_ROUTE_SET <- sort(unique(c(
   unlist(FORM_TO_ROUTE_CANONICAL, use.names = FALSE)
 )))
 
+cached_route_norm <- make_cached_mapper(normalize_route_entry)
+cached_form_norm <- make_cached_mapper(normalize_form_value)
+cached_dose_norm <- make_cached_mapper(normalize_dose_value)
+
 normalize_route_entry <- function(value) {
   if (is.null(value) || is.na(value)) return(character())
   s <- tolower(collapse_ws(value))
@@ -910,8 +934,8 @@ process_source <- function(dt) {
     # Preserve full route string to allow multi-token splits downstream.
     source_dt[, route_raw := route_raw]
     map_fun <- if (allow_parallel_norm) parallel_lapply else lapply
-    source_dt[, route_norm_list := map_fun(as.list(route_raw), normalize_route_entry)]
-    source_dt[, form_norm_list := map_fun(as.list(form_raw), normalize_form_value)]
+    source_dt[, route_norm_list := map_fun(as.list(route_raw), cached_route_norm)]
+    source_dt[, form_norm_list := map_fun(as.list(form_raw), cached_form_norm)]
     source_dt[, form_norm_list := lapply(form_norm_list, function(vals) {
       vals <- unique_canonical(vals)
       if (!length(vals)) vals <- NA_character_
@@ -921,9 +945,9 @@ process_source <- function(dt) {
       if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
     }, character(1), USE.NAMES = FALSE)]
     if (allow_parallel_norm) {
-      source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
+      source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), cached_dose_norm), use.names = FALSE)]
     } else {
-      source_dt[, dose_norm := vapply(dose_raw, normalize_dose_value, character(1), USE.NAMES = FALSE)]
+      source_dt[, dose_norm := vapply(dose_raw, cached_dose_norm, character(1), USE.NAMES = FALSE)]
     }
     source_dt[, raw_dose := dose_raw]
     source_dt[form_norm == "", form_norm := NA_character_]
