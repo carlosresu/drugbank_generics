@@ -8,8 +8,23 @@ suppressWarnings({
         install.packages(pkg, repos = "https://cloud.r-project.org")
       }
     }
+    ensure_dbdataset <- function() {
+      if (requireNamespace("dbdataset", quietly = TRUE)) return(invisible(TRUE))
+      ensure_installed("remotes")
+      installer <- NULL
+      if (requireNamespace("remotes", quietly = TRUE)) {
+        installer <- remotes::install_github
+      } else if (requireNamespace("devtools", quietly = TRUE)) {
+        installer <- devtools::install_github
+      }
+      if (is.null(installer)) {
+        stop("dbdataset package is required; install remotes or devtools to proceed.")
+      }
+      installer("interstellar-Consultation-Services/dbdataset", quiet = TRUE, upgrade = "never")
+      invisible(TRUE)
+    }
     ensure_installed("data.table")
-    ensure_installed("dbdataset")
+    ensure_dbdataset()
   })
 })
 
