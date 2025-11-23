@@ -102,8 +102,14 @@ run_subscript <- function(script_path, env_vars = character()) {
   status <- system2(rscript_bin, c(script_path), stdout = tmp_log, stderr = tmp_log)
   if (!is.null(status) && status != 0) {
     output <- tryCatch(paste(readLines(tmp_log, warn = FALSE), collapse = "\n"), error = function(...) "")
+    dest_log <- file.path(script_dir, "output", "drugbank_all_error.log")
+    dir.create(dirname(dest_log), recursive = TRUE, showWarnings = FALSE)
+    try(file.copy(tmp_log, dest_log, overwrite = TRUE), silent = TRUE)
     if (nzchar(output)) {
       message("\n--- Subscript output start ---\n", output, "\n--- Subscript output end ---\n")
+    }
+    if (file.exists(dest_log)) {
+      message(sprintf("Subscript log saved to %s", dest_log))
     }
     stop(sprintf("Script %s exited with status %s", script_path, status))
   }
