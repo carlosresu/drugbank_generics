@@ -225,6 +225,7 @@ make_cached_mapper <- function(fun) {
     } else {
       as.character(x)
     }
+    if (!length(key) || !nzchar(key)) key <- "<EMPTY>"
     hit <- cache[[key]]
     if (!is.null(hit)) return(hit)
     res <- fun(x)
