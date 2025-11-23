@@ -39,10 +39,33 @@ tryCatch({
 library(data.table)
 library(dbdataset)
 
+options(error = function() {
+  quit(status = 1)
+})
+
 argv <- commandArgs(trailingOnly = TRUE)
 keep_all_flag <- "--keep-all" %in% argv
 parallel_enabled <- !("--no-parallel" %in% argv)
 quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
+cat(sprintf("[drugbank_generics] libpaths: %s\n", paste(.libPaths(), collapse = " | ")))
+opt_lib <- Sys.getenv("R_LIBS_USER", unset = "")
+if (nzchar(opt_lib)) {
+  .libPaths(c(normalizePath(opt_lib, winslash = "/", mustWork = FALSE), .libPaths()))
+}
+
+load_drugbank_dataset <- function() {
+  if (exists("drugbank", inherits = FALSE)) {
+    return(get("drugbank", inherits = FALSE))
+  }
+  if (exists("drugbank", where = "package:dbdataset")) {
+    return(get("drugbank", envir = as.environment("package:dbdataset")))
+  }
+  data("drugbank", package = "dbdataset", envir = environment())
+  if (!exists("drugbank", inherits = FALSE)) {
+    stop("dbdataset::drugbank dataset is unavailable; reinstall dbdataset.")
+  }
+  get("drugbank", inherits = FALSE)
+}
 
 resolve_workers <- function() {
   env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_WORKERS", "")))
@@ -762,7 +785,7 @@ output_dir <- file.path(script_dir, "output")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 output_master_path <- file.path(output_dir, "drugbank_generics_master.csv")
 
-dataset <- drugbank
+dataset <- load_drugbank_dataset()
 
 groups_dt <- as.data.table(dataset$drugs$groups)
 groups_dt[, drugbank_id := as.character(drugbank_id)]
