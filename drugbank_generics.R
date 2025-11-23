@@ -125,15 +125,24 @@ choose_backend <- function() {
 }
 
 parallel_lapply <- function(x, fun) {
+  n <- length(x)
+  if (n == 0L) return(lapply(x, fun))
+  if (!parallel_enabled || worker_count <= 1L) return(lapply(x, fun))
+  if (!requireNamespace("future.apply", quietly = TRUE)) return(lapply(x, fun))
+  # Use coarse chunks to avoid spawning thousands of futures and re-exporting large inputs.
+  chunk_size <- max(1L, min(resolve_chunk_size(n), ceiling(n / max(1L, worker_count))))
+  idx <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
+  chunks <- lapply(idx, function(ix) x[ix])
+  worker <- function(chunk) lapply(chunk, fun)
   backend <- choose_backend()
   if (parallel_enabled && backend == "mclapply" && .Platform$OS.type == "unix" && requireNamespace("parallel", quietly = TRUE)) {
     cores <- max(1L, worker_count)
     res <- tryCatch(
       parallel::mclapply(
-        x,
-        fun,
+        chunks,
+        worker,
         mc.cores = cores,
-        mc.preschedule = FALSE
+        mc.preschedule = TRUE
       ),
       error = function(err) {
         msg <- sprintf(
@@ -146,33 +155,37 @@ parallel_lapply <- function(x, fun) {
         NULL
       }
     )
-    if (!is.null(res)) return(res)
+    if (!is.null(res)) {
+      out <- vector("list", n)
+      for (i in seq_along(idx)) out[idx[[i]]] <- res[[i]]
+      return(out)
+    }
     cat("[parallel] Falling back to future backend after mclapply failure\n")
   }
-  if (parallel_enabled) {
-    return(
-      tryCatch(
-        future.apply::future_lapply(
-          x,
-          fun,
-          future.seed = FALSE,
-          future.scheduling = worker_count,
-          future.chunk.size = NULL
-        ),
-        error = function(err) {
-          msg <- sprintf(
-            "[parallel:future] failed: %s | length(x)=%s | workers=%s",
-            conditionMessage(err),
-            length(x),
-            worker_count
-          )
-          cat(msg, "\n")
-          stop(msg, call. = FALSE)
-        }
+  tryCatch(
+    {
+      res <- future.apply::future_lapply(
+        chunks,
+        worker,
+        future.seed = FALSE,
+        future.scheduling = 1,
+        future.chunk.size = 1
       )
-    )
-  }
-  stop("[parallel] No supported parallel backend available on this platform.")
+      out <- vector("list", n)
+      for (i in seq_along(idx)) out[idx[[i]]] <- res[[i]]
+      out
+    },
+    error = function(err) {
+      msg <- sprintf(
+        "[parallel:future] failed: %s | length(x)=%s | workers=%s",
+        conditionMessage(err),
+        length(x),
+        worker_count
+      )
+      cat(msg, "\n")
+      stop(msg, call. = FALSE)
+    }
+  )
 }
 
 resolve_chunk_size <- function(total_rows) {
@@ -872,7 +885,7 @@ salts_dt <- salts_dt[, .(salt_names_list = list(unique_canonical(salt_name))), b
 process_source <- function(dt) {
   if (!nrow(dt)) return(dt)
   chunk_size <- resolve_chunk_size(nrow(dt))
-  process_block <- function(block) {
+  process_block <- function(block, allow_parallel_norm) {
     source_dt <- copy(block)
     source_dt <- filter_excluded(source_dt)
     if (!"route_raw" %in% names(source_dt)) source_dt[, route_raw := NA_character_]
@@ -896,8 +909,9 @@ process_source <- function(dt) {
     source_dt[, form_raw := vapply(form_clean_list, function(x) collapse_ws(x$base), character(1), USE.NAMES = FALSE)]
     # Preserve full route string to allow multi-token splits downstream.
     source_dt[, route_raw := route_raw]
-    source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
-    source_dt[, form_norm_list := parallel_lapply(as.list(form_raw), normalize_form_value)]
+    map_fun <- if (allow_parallel_norm) parallel_lapply else lapply
+    source_dt[, route_norm_list := map_fun(as.list(route_raw), normalize_route_entry)]
+    source_dt[, form_norm_list := map_fun(as.list(form_raw), normalize_form_value)]
     source_dt[, form_norm_list := lapply(form_norm_list, function(vals) {
       vals <- unique_canonical(vals)
       if (!length(vals)) vals <- NA_character_
@@ -906,55 +920,24 @@ process_source <- function(dt) {
     source_dt[, form_norm := vapply(form_norm_list, function(vals) {
       if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
     }, character(1), USE.NAMES = FALSE)]
-    source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
+    if (allow_parallel_norm) {
+      source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
+    } else {
+      source_dt[, dose_norm := vapply(dose_raw, normalize_dose_value, character(1), USE.NAMES = FALSE)]
+    }
     source_dt[, raw_dose := dose_raw]
     source_dt[form_norm == "", form_norm := NA_character_]
     source_dt[dose_norm == "", dose_norm := NA_character_]
     source_dt
   }
 
-  if (parallel_enabled && worker_count > 1L && nrow(dt) > 1L) {
+  use_outer_parallel <- parallel_enabled && worker_count > 1L && nrow(dt) > chunk_size
+  if (use_outer_parallel) {
     idx <- split(seq_len(nrow(dt)), ceiling(seq_len(nrow(dt)) / chunk_size))
-    parts <- parallel_lapply(idx, function(ix) process_block(dt[ix]))
+    parts <- parallel_lapply(idx, function(ix) process_block(dt[ix], allow_parallel_norm = FALSE))
     return(rbindlist(parts, fill = TRUE, use.names = TRUE))
   }
-  source_dt <- copy(dt)
-  source_dt <- filter_excluded(source_dt)
-  if (!"route_raw" %in% names(source_dt)) source_dt[, route_raw := NA_character_]
-  if (!"form_raw" %in% names(source_dt)) source_dt[, form_raw := NA_character_]
-  if (!"dose_raw" %in% names(source_dt)) source_dt[, dose_raw := NA_character_]
-  source_dt[, route_raw := collapse_ws(route_raw)]
-  source_dt[, form_raw := collapse_ws(form_raw)]
-  source_dt[, dose_raw := collapse_ws(dose_raw)]
-  source_dt[, raw_form_original := form_raw]
-  source_dt[, raw_route_original := route_raw]
-  form_vec <- source_dt$form_raw
-  route_vec <- source_dt$route_raw
-  form_clean_list <- lapply(form_vec, clean_form_route_entry)
-  route_clean_list <- lapply(route_vec, clean_form_route_entry)
-  source_dt[, raw_form_details := vapply(form_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
-  source_dt[, raw_route_details := vapply(route_clean_list, function(x) x$detail, character(1), USE.NAMES = FALSE)]
-  source_dt[, raw_form_original_key := vapply(raw_form_original, canonical_case_key, character(1), USE.NAMES = FALSE)]
-  source_dt[, raw_form_details_key := vapply(raw_form_details, canonical_case_key, character(1), USE.NAMES = FALSE)]
-  source_dt[, raw_route_original_key := vapply(raw_route_original, canonical_case_key, character(1), USE.NAMES = FALSE)]
-  source_dt[, raw_route_details_key := vapply(raw_route_details, canonical_case_key, character(1), USE.NAMES = FALSE)]
-  source_dt[, form_raw := vapply(form_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
-  source_dt[, route_raw := vapply(route_clean_list, function(x) x$base, character(1), USE.NAMES = FALSE)]
-  source_dt[, route_norm_list := parallel_lapply(as.list(route_raw), normalize_route_entry)]
-  source_dt[, form_norm_list := parallel_lapply(as.list(form_raw), normalize_form_value)]
-  source_dt[, form_norm_list := lapply(form_norm_list, function(vals) {
-    vals <- unique_canonical(vals)
-    if (!length(vals)) vals <- NA_character_
-    vals
-  })]
-  source_dt[, form_norm := vapply(form_norm_list, function(vals) {
-    if (length(vals) && !all(is.na(vals))) vals[[1]] else NA_character_
-  }, character(1), USE.NAMES = FALSE)]
-  source_dt[, dose_norm := unlist(parallel_lapply(as.list(dose_raw), normalize_dose_value), use.names = FALSE)]
-  source_dt[, raw_dose := dose_raw]
-  source_dt[form_norm == "", form_norm := NA_character_]
-  source_dt[dose_norm == "", dose_norm := NA_character_]
-  source_dt
+  process_block(dt, allow_parallel_norm = parallel_enabled && worker_count > 1L)
 }
 
 # dosages

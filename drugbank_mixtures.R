@@ -104,15 +104,24 @@ choose_backend <- function() {
 }
 
 parallel_lapply <- function(x, fun) {
+  n <- length(x)
+  if (n == 0L) return(lapply(x, fun))
+  if (!parallel_enabled || worker_count <= 1L) return(lapply(x, fun))
+  if (!requireNamespace("future.apply", quietly = TRUE)) return(lapply(x, fun))
+  # Use coarse chunks to avoid spawning thousands of futures and re-exporting large inputs.
+  chunk_size <- max(1L, min(resolve_chunk_size(n), ceiling(n / max(1L, worker_count))))
+  idx <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
+  chunks <- lapply(idx, function(ix) x[ix])
+  worker <- function(chunk) lapply(chunk, fun)
   backend <- choose_backend()
   if (parallel_enabled && backend == "mclapply" && .Platform$OS.type == "unix" && requireNamespace("parallel", quietly = TRUE)) {
     cores <- max(1L, worker_count)
     res <- tryCatch(
       parallel::mclapply(
-        x,
-        fun,
+        chunks,
+        worker,
         mc.cores = cores,
-        mc.preschedule = FALSE
+        mc.preschedule = TRUE
       ),
       error = function(err) {
         msg <- sprintf(
@@ -125,33 +134,37 @@ parallel_lapply <- function(x, fun) {
         NULL
       }
     )
-    if (!is.null(res)) return(res)
+    if (!is.null(res)) {
+      out <- vector("list", n)
+      for (i in seq_along(idx)) out[idx[[i]]] <- res[[i]]
+      return(out)
+    }
     cat("[parallel] Falling back to future backend after mclapply failure\n")
   }
-  if (parallel_enabled) {
-    return(
-      tryCatch(
-        future.apply::future_lapply(
-          x,
-          fun,
-          future.seed = FALSE,
-          future.scheduling = worker_count,
-          future.chunk.size = NULL
-        ),
-        error = function(err) {
-          msg <- sprintf(
-            "[parallel:future] failed: %s | length(x)=%s | workers=%s",
-            conditionMessage(err),
-            length(x),
-            worker_count
-          )
-          cat(msg, "\n")
-          stop(msg, call. = FALSE)
-        }
+  tryCatch(
+    {
+      res <- future.apply::future_lapply(
+        chunks,
+        worker,
+        future.seed = FALSE,
+        future.scheduling = 1,
+        future.chunk.size = 1
       )
-    )
-  }
-  stop("[parallel] No supported parallel backend available on this platform.")
+      out <- vector("list", n)
+      for (i in seq_along(idx)) out[idx[[i]]] <- res[[i]]
+      out
+    },
+    error = function(err) {
+      msg <- sprintf(
+        "[parallel:future] failed: %s | length(x)=%s | workers=%s",
+        conditionMessage(err),
+        length(x),
+        worker_count
+      )
+      cat(msg, "\n")
+      stop(msg, call. = FALSE)
+    }
+  )
 }
 
 get_script_dir <- function() {
