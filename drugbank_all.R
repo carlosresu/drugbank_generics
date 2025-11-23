@@ -113,11 +113,19 @@ run_subscript <- function(script_path, env_vars = character()) {
   valid <- !is.na(final_names) & nzchar(final_names)
   env_all <- structure(values[valid], names = final_names[valid])
   env_names <- names(env_all)
+  if (is.null(env_names)) env_names <- character(length(env_all))
   # Apply env vars for the subprocess without polluting the parent session.
-  prior <- Sys.getenv(env_names, unset = NA_character_)
+  prior <- if (length(env_names)) Sys.getenv(env_names, unset = NA_character_) else character()
   on.exit({
+    if (!length(env_names)) return(invisible())
     for (i in seq_along(prior)) {
-      if (is.na(prior[i])) Sys.unsetenv(env_names[i]) else Sys.setenv(structure(prior[i], names = env_names[i]))
+      nm <- env_names[i]
+      if (is.na(nm) || !nzchar(nm)) next
+      if (is.na(prior[i])) {
+        Sys.unsetenv(nm)
+      } else {
+        do.call(Sys.setenv, stats::setNames(list(prior[i]), nm))
+      }
     }
   }, add = TRUE)
   if (length(env_all)) do.call(Sys.setenv, as.list(env_all))
