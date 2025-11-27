@@ -160,7 +160,7 @@ workers <- Sys.getenv("ESOA_DRUGBANK_WORKERS", unset = "")
 if (nzchar(workers)) {
   message(sprintf("[drugbank_all] Using %s workers (ESOA_DRUGBANK_WORKERS)", workers))
 }
-subscripts <- c("drugbank_generics.R", "drugbank_mixtures.R")
+subscripts <- c("drugbank_generics.R", "drugbank_mixtures.R", "drugbank_brands.R")
 env_forward <- sprintf("ESOA_DRUGBANK_QUIET=%s", Sys.getenv("ESOA_DRUGBANK_QUIET", unset = "0"))
 
 for (script in subscripts) {
