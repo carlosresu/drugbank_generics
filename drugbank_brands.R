@@ -2,38 +2,30 @@
 # drugbank_brands.R — build a brands-focused DrugBank master dataset
 # Extracts brand names from products (generic=false) and mixture names
 # Output: drugbank_brands_master.csv with brand→generic mapping
+# Can be run standalone: Rscript drugbank_brands.R
 
-suppressWarnings({
-  suppressPackageStartupMessages({
-    ensure_installed <- function(pkg) {
-      if (!requireNamespace(pkg, quietly = TRUE)) {
-        install.packages(pkg, repos = "https://cloud.r-project.org")
-      }
+# ============================================================================
+# SHARED SETUP - Source _shared.R if not already loaded
+# ============================================================================
+if (!exists("DRUGBANK_SHARED_LOADED") || !isTRUE(DRUGBANK_SHARED_LOADED)) {
+  script_dir <- if (exists("DRUGBANK_BASE_DIR")) {
+    DRUGBANK_BASE_DIR
+  } else {
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      dirname(normalizePath(sub("^--file=", "", file_arg[1])))
+    } else {
+      getwd()
     }
-    ensure_dbdataset <- function() {
-      if (requireNamespace("dbdataset", quietly = TRUE)) return(invisible(TRUE))
-      ensure_installed("remotes")
-      installer <- NULL
-      if (requireNamespace("remotes", quietly = TRUE)) {
-        installer <- remotes::install_github
-      } else if (requireNamespace("devtools", quietly = TRUE)) {
-        installer <- devtools::install_github
-      }
-      if (is.null(installer)) {
-        stop("dbdataset package is required; install remotes or devtools to proceed.")
-      }
-      installer("interstellar-Consultation-Services/dbdataset", quiet = TRUE, upgrade = "never")
-      invisible(TRUE)
-    }
-    ensure_installed("data.table")
-    ensure_dbdataset()
-  })
-})
-
-library(data.table)
-library(dbdataset)
-
-quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
+  }
+  shared_path <- file.path(script_dir, "_shared.R")
+  if (file.exists(shared_path)) {
+    source(shared_path, local = FALSE)
+  } else {
+    stop("_shared.R not found. Run from drugbank_generics directory or via drugbank_all_v2.R")
+  }
+}
 
 collapse_ws <- function(x) {
   ifelse(is.na(x), NA_character_, trimws(gsub("\\s+", " ", as.character(x))))

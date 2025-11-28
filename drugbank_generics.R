@@ -4,115 +4,41 @@
 #          generic_components_key, dose_norm, raw_dose, dose_synonyms,
 #          form_norm, raw_form, form_synonyms, route_norm, raw_route,
 #          route_synonyms, atc_code, salt_names, groups
+#
+# Can be run standalone: Rscript drugbank_generics.R
 
-suppressWarnings({
-  suppressPackageStartupMessages({
-    ensure_installed <- function(pkg) {
-      if (!requireNamespace(pkg, quietly = TRUE)) {
-        install.packages(pkg, repos = "https://cloud.r-project.org")
-      }
+# ============================================================================
+# SHARED SETUP - Source _shared.R if not already loaded
+# ============================================================================
+if (!exists("DRUGBANK_SHARED_LOADED") || !isTRUE(DRUGBANK_SHARED_LOADED)) {
+  # Running standalone - need to load shared setup
+  script_dir <- if (exists("DRUGBANK_BASE_DIR")) {
+    DRUGBANK_BASE_DIR
+  } else {
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      dirname(normalizePath(sub("^--file=", "", file_arg[1])))
+    } else {
+      getwd()
     }
-    ensure_dbdataset <- function() {
-      if (requireNamespace("dbdataset", quietly = TRUE)) return(invisible(TRUE))
-      ensure_installed("remotes")
-      installer <- NULL
-      if (requireNamespace("remotes", quietly = TRUE)) {
-        installer <- remotes::install_github
-      } else if (requireNamespace("devtools", quietly = TRUE)) {
-        installer <- devtools::install_github
-      }
-      if (is.null(installer)) {
-        stop("dbdataset package is required; install remotes or devtools to proceed.")
-      }
-      installer("interstellar-Consultation-Services/dbdataset", quiet = TRUE, upgrade = "never")
-      invisible(TRUE)
-    }
-    ensure_installed("data.table")
-    ensure_dbdataset()
-  })
-})
+  }
+  shared_path <- file.path(script_dir, "_shared.R")
+  if (file.exists(shared_path)) {
+    source(shared_path, local = FALSE)
+  } else {
+    stop("_shared.R not found. Run from drugbank_generics directory or via drugbank_all_v2.R")
+  }
+}
 
-tryCatch({
-  ensure_installed("arrow")
-}, error = function(e) {})
-
-library(data.table)
-library(dbdataset)
-
-options(error = function() {
-  quit(status = 1)
-})
-
+# Script-specific args
 argv <- commandArgs(trailingOnly = TRUE)
 keep_all_flag <- "--keep-all" %in% argv
-parallel_enabled <- !("--no-parallel" %in% argv)
-quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
-cat(sprintf("[drugbank_generics] libpaths: %s\n", paste(.libPaths(), collapse = " | ")))
-opt_lib <- Sys.getenv("R_LIBS_USER", unset = "")
-if (nzchar(opt_lib)) {
-  .libPaths(c(normalizePath(opt_lib, winslash = "/", mustWork = FALSE), .libPaths()))
+
+if (!quiet_mode) {
+  cat(sprintf("[drugbank_generics] data.table threads: %s | parallel workers: %s\n", 
+              data.table::getDTthreads(), worker_count))
 }
-
-load_drugbank_dataset <- function() {
-  if (exists("drugbank", inherits = FALSE)) {
-    return(get("drugbank", inherits = FALSE))
-  }
-  if (exists("drugbank", where = "package:dbdataset")) {
-    return(get("drugbank", envir = as.environment("package:dbdataset")))
-  }
-  data("drugbank", package = "dbdataset", envir = environment())
-  if (!exists("drugbank", inherits = FALSE)) {
-    stop("dbdataset::drugbank dataset is unavailable; reinstall dbdataset.")
-  }
-  get("drugbank", inherits = FALSE)
-}
-
-resolve_workers <- function() {
-  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_WORKERS", "")))
-  if (!is.na(env_val) && env_val > 0) return(env_val)
-  cores <- NA_integer_
-  try(cores <- parallel::detectCores(logical = TRUE), silent = TRUE)
-  if (is.na(cores) && requireNamespace("future", quietly = TRUE)) {
-    try(cores <- future::availableCores(), silent = TRUE)
-  }
-  if (is.na(cores)) cores <- 13L
-  min(13L, max(1L, cores))
-}
-
-detect_os_name <- function() {
-  os <- Sys.info()[["sysname"]]
-  if (is.null(os)) os <- .Platform$OS.type
-  tolower(os)
-}
-
-worker_count <- resolve_workers()
-data.table::setDTthreads(worker_count)
-
-init_parallel_plan <- function(enabled_flag, workers) {
-  plan_state <- NULL
-  if (!enabled_flag) return(plan_state)
-  tryCatch({
-    ensure_installed("future")
-    ensure_installed("future.apply")
-    library(future)
-    library(future.apply)
-    os_name <- detect_os_name()
-    if (os_name %in% c("windows")) {
-      plan(future::multisession, workers = workers)
-    } else if (future::supportsMulticore()) {
-      plan(future::multicore, workers = workers)
-    } else {
-      plan(future::multisession, workers = workers)
-    }
-    plan_state <- TRUE
-  }, error = function(e) {
-    parallel_enabled <<- FALSE
-  })
-  plan_state
-}
-
-plan_reset <- init_parallel_plan(parallel_enabled, worker_count)
-cat(sprintf("[drugbank_generics] data.table threads: %s | parallel workers: %s\n", data.table::getDTthreads(), worker_count))
 
 choose_backend <- function() {
   backend <- tolower(Sys.getenv("ESOA_DRUGBANK_BACKEND", "future"))
@@ -1211,6 +1137,4 @@ if (!quiet_mode) {
   print(head(final_dt, 5))
 }
 
-if (!is.null(plan_reset)) {
-  try(future::plan(future::sequential), silent = TRUE)
-}
+# NOTE: No cleanup needed - process exits after standalone run

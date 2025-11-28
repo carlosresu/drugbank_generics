@@ -1,97 +1,34 @@
 #!/usr/bin/env Rscript
 # drugbank_mixtures.R — build a mixtures-focused DrugBank master dataset
+# Can be run standalone: Rscript drugbank_mixtures.R
 
-suppressWarnings({
-  suppressPackageStartupMessages({
-    ensure_installed <- function(pkg) {
-      if (!requireNamespace(pkg, quietly = TRUE)) {
-        install.packages(pkg, repos = "https://cloud.r-project.org")
-      }
-    }
-    ensure_dbdataset <- function() {
-      if (requireNamespace("dbdataset", quietly = TRUE)) return(invisible(TRUE))
-      ensure_installed("remotes")
-      installer <- NULL
-      if (requireNamespace("remotes", quietly = TRUE)) {
-        installer <- remotes::install_github
-      } else if (requireNamespace("devtools", quietly = TRUE)) {
-        installer <- devtools::install_github
-      }
-      if (is.null(installer)) {
-        stop("dbdataset package is required; install remotes or devtools to proceed.")
-      }
-      installer("interstellar-Consultation-Services/dbdataset", quiet = TRUE, upgrade = "never")
-      invisible(TRUE)
-    }
-    ensure_installed("data.table")
-    ensure_dbdataset()
-  })
-})
-
-tryCatch({
-  ensure_installed("arrow")
-}, error = function(e) {})
-
-library(data.table)
-library(dbdataset)
-
-argv <- commandArgs(trailingOnly = TRUE)
-parallel_enabled <- !("--no-parallel" %in% argv)
-quiet_mode <- identical(tolower(Sys.getenv("ESOA_DRUGBANK_QUIET", "0")), "1")
-
-resolve_workers <- function() {
-  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_WORKERS", "")))
-  if (!is.na(env_val) && env_val > 0) return(env_val)
-  cores <- NA_integer_
-  try(cores <- parallel::detectCores(logical = TRUE), silent = TRUE)
-  if (is.na(cores) && requireNamespace("future", quietly = TRUE)) {
-    try(cores <- future::availableCores(), silent = TRUE)
-  }
-  if (is.na(cores)) cores <- 1L
-  max(1L, cores)
-}
-
-detect_os_name <- function() {
-  os <- Sys.info()[["sysname"]]
-  if (is.null(os)) os <- .Platform$OS.type
-  tolower(os)
-}
-
-worker_count <- resolve_workers()
-data.table::setDTthreads(worker_count)
-
-resolve_chunk_size <- function(total_rows) {
-  env_val <- suppressWarnings(as.integer(Sys.getenv("ESOA_DRUGBANK_CHUNK", "")))
-  if (!is.na(env_val) && env_val > 0) return(env_val)
-  # Aim for multiple chunks per worker while avoiding excessive overhead.
-  max(1000L, ceiling(total_rows / max(1L, worker_count * 3L)))
-}
-
-init_parallel_plan <- function(enabled_flag, workers) {
-  plan_state <- NULL
-  if (!enabled_flag) return(plan_state)
-  tryCatch({
-    ensure_installed("future")
-    ensure_installed("future.apply")
-    library(future)
-    library(future.apply)
-    os_name <- detect_os_name()
-    if (os_name %in% c("windows")) {
-      plan(future::multisession, workers = workers)
-    } else if (future::supportsMulticore()) {
-      plan(future::multicore, workers = workers)
+# ============================================================================
+# SHARED SETUP - Source _shared.R if not already loaded
+# ============================================================================
+if (!exists("DRUGBANK_SHARED_LOADED") || !isTRUE(DRUGBANK_SHARED_LOADED)) {
+  script_dir <- if (exists("DRUGBANK_BASE_DIR")) {
+    DRUGBANK_BASE_DIR
+  } else {
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      dirname(normalizePath(sub("^--file=", "", file_arg[1])))
     } else {
-      plan(future::multisession, workers = workers)
+      getwd()
     }
-    plan_state <- TRUE
-  }, error = function(e) {
-    parallel_enabled <<- FALSE
-  })
-  plan_state
+  }
+  shared_path <- file.path(script_dir, "_shared.R")
+  if (file.exists(shared_path)) {
+    source(shared_path, local = FALSE)
+  } else {
+    stop("_shared.R not found. Run from drugbank_generics directory or via drugbank_all_v2.R")
+  }
 }
 
-plan_reset <- init_parallel_plan(parallel_enabled, worker_count)
-cat(sprintf("[drugbank_mixtures] data.table threads: %s | parallel workers: %s\n", data.table::getDTthreads(), worker_count))
+if (!quiet_mode) {
+  cat(sprintf("[drugbank_mixtures] data.table threads: %s | parallel workers: %s\n", 
+              data.table::getDTthreads(), worker_count))
+}
 
 choose_backend <- function() {
   backend <- tolower(Sys.getenv("ESOA_DRUGBANK_BACKEND", "future"))
@@ -530,6 +467,4 @@ if (!quiet_mode) {
   print(head(mixtures_dt, 5))
 }
 
-if (!is.null(plan_reset)) {
-  try(future::plan(future::sequential), silent = TRUE)
-}
+# NOTE: No cleanup needed - process exits after standalone run
