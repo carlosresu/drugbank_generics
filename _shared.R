@@ -62,7 +62,8 @@ if (exists("DRUGBANK_SHARED_LOADED") && isTRUE(DRUGBANK_SHARED_LOADED)) {
       try(cores <- future::availableCores(), silent = TRUE)
     }
     if (is.na(cores)) cores <- 1L
-    max(1L, cores)
+    # Default to min(8, cores) per AGENTS.md #6
+    min(8L, max(1L, cores))
   }
   
   worker_count <- resolve_workers()
