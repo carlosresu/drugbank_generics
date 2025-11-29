@@ -179,25 +179,23 @@ if (exists("DRUGBANK_SHARED_LOADED") && isTRUE(DRUGBANK_SHARED_LOADED)) {
     n <- length(x)
     if (n == 0L) return(lapply(x, fun))
     if (!parallel_enabled || worker_count <= 1L) return(lapply(x, fun))
-    if (!requireNamespace("future.apply", quietly = TRUE)) return(lapply(x, fun))
-    chunk_size <- max(1L, min(resolve_chunk_size(n), ceiling(n / max(1L, worker_count))))
-    idx <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
-    chunks <- lapply(idx, function(ix) x[ix])
-    worker <- function(chunk) lapply(chunk, fun)
-    tryCatch({
-      res <- future.apply::future_lapply(
-        chunks,
-        worker,
-        future.seed = FALSE,
-        future.scheduling = 1,
-        future.chunk.size = 1
-      )
-      out <- vector("list", n)
-      for (i in seq_along(idx)) out[idx[[i]]] <- res[[i]]
-      out
-    }, error = function(err) {
-      lapply(x, fun)
-    })
+    
+    # Try parallel::mclapply first (Unix only, no serialization overhead)
+    if (.Platform$OS.type == "unix") {
+      tryCatch({
+        res <- parallel::mclapply(x, fun, mc.cores = worker_count)
+        # Check for errors
+        if (any(sapply(res, inherits, "try-error"))) {
+          return(lapply(x, fun))
+        }
+        return(res)
+      }, error = function(err) {
+        # Fall through to sequential
+      })
+    }
+    
+    # Fallback to sequential (future has too much serialization overhead)
+    lapply(x, fun)
   }
   
   # Load drugbank dataset (cached)
