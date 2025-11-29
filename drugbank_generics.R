@@ -747,6 +747,10 @@ collect_disallowed_pairs <- function(dt) {
 script_dir <- get_script_dir()
 output_dir <- file.path(script_dir, "output")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+# Auto-purge old dated files in output directory
+purge_old_dated_files(output_dir)
+
 output_master_path <- file.path(output_dir, "drugbank_generics_master.csv")
 
 dataset <- load_drugbank_dataset()

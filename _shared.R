@@ -215,6 +215,43 @@ if (exists("DRUGBANK_SHARED_LOADED") && isTRUE(DRUGBANK_SHARED_LOADED)) {
     get("drugbank", inherits = FALSE)
   }
   
+  # Remove all but the latest dated files (name_YYYY-MM-DD.ext pattern)
+  purge_old_dated_files <- function(directory) {
+    if (!dir.exists(directory)) return(invisible(0L))
+    files <- list.files(directory, full.names = TRUE)
+    pattern <- "^(.+?)_(\\d{4}-\\d{2}-\\d{2})(?:_.*)?(\\.[^.]+)$"
+    
+    groups <- list()
+    for (f in files) {
+      if (dir.exists(f)) next
+      fname <- basename(f)
+      m <- regmatches(fname, regexec(pattern, fname, perl = TRUE))[[1]]
+      if (length(m) >= 4) {
+        base_name <- m[2]
+        date_str <- m[3]
+        ext <- m[4]
+        key <- paste0(base_name, ext)
+        if (is.null(groups[[key]])) groups[[key]] <- list()
+        groups[[key]] <- append(groups[[key]], list(list(date = date_str, path = f)))
+      }
+    }
+    
+    deleted <- 0L
+    for (key in names(groups)) {
+      file_list <- groups[[key]]
+      if (length(file_list) <= 1) next
+      dates <- sapply(file_list, function(x) x$date)
+      ord <- order(dates, decreasing = TRUE)
+      for (i in ord[-1]) {
+        tryCatch({
+          file.remove(file_list[[i]]$path)
+          deleted <- deleted + 1L
+        }, error = function(e) {})
+      }
+    }
+    invisible(deleted)
+  }
+  
   # Pre-load drugbank dataset so it's cached for all scripts
   drugbank <- load_drugbank_dataset()
 }
