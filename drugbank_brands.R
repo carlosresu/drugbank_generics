@@ -258,8 +258,8 @@ for (col in output_cols) {
   }
 }
 
-fwrite(all_brands[, ..output_cols], output_path)
-cat(sprintf("[drugbank_brands] Output written to %s\n", output_path))
+write_csv_and_parquet(all_brands[, ..output_cols], output_path)
+cat(sprintf("[drugbank_brands] Output written to %s (+parquet)\n", output_path))
 
 # ============================================================================
 # PART 6: Also export products info for enriching generics
@@ -284,8 +284,8 @@ products_export <- products_dt[
 ]
 
 products_output_path <- file.path(output_dir, "drugbank_products_export.csv")
-fwrite(products_export, products_output_path)
-cat(sprintf("[drugbank_brands] Products export written to %s (%d rows)\n", 
+write_csv_and_parquet(products_export, products_output_path)
+cat(sprintf("[drugbank_brands] Products export written to %s (+parquet, %d rows)\n", 
             products_output_path, nrow(products_export)))
 
 cat("[drugbank_brands] Done.\n")

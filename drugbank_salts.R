@@ -203,23 +203,23 @@ get_script_dir <- function() {
 output_dir <- file.path(get_script_dir(), "output")
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
-# Write salts master
+# Write salts master (CSV + Parquet)
 salts_out <- file.path(output_dir, "drugbank_salts_master.csv")
-fwrite(salts_dt, salts_out)
-if (!quiet_mode) cat("[drugbank_salts] Wrote:", salts_out, "(", nrow(salts_dt), "rows )\n")
+write_csv_and_parquet(salts_dt, salts_out)
+if (!quiet_mode) cat("[drugbank_salts] Wrote:", salts_out, "(+parquet,", nrow(salts_dt), "rows)\n")
 
-# Write pure salts reference
+# Write pure salts reference (CSV + Parquet)
 pure_salts_out <- file.path(output_dir, "drugbank_pure_salts.csv")
-fwrite(pure_salts_dt, pure_salts_out)
-if (!quiet_mode) cat("[drugbank_salts] Wrote:", pure_salts_out, "(", nrow(pure_salts_dt), "rows )\n")
+write_csv_and_parquet(pure_salts_dt, pure_salts_out)
+if (!quiet_mode) cat("[drugbank_salts] Wrote:", pure_salts_out, "(+parquet,", nrow(pure_salts_dt), "rows)\n")
 
-# Write unique salt suffixes for quick lookup
+# Write unique salt suffixes for quick lookup (CSV + Parquet)
 salt_suffixes_dt <- data.table(
   salt_suffix = salt_suffixes,
   salt_suffix_normalized = toupper(salt_suffixes)
 )
 suffixes_out <- file.path(output_dir, "drugbank_salt_suffixes.csv")
-fwrite(salt_suffixes_dt, suffixes_out)
-if (!quiet_mode) cat("[drugbank_salts] Wrote:", suffixes_out, "(", nrow(salt_suffixes_dt), "rows )\n")
+write_csv_and_parquet(salt_suffixes_dt, suffixes_out)
+if (!quiet_mode) cat("[drugbank_salts] Wrote:", suffixes_out, "(+parquet,", nrow(salt_suffixes_dt), "rows)\n")
 
 if (!quiet_mode) cat("[drugbank_salts] Done.\n")
