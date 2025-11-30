@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # drugbank_lean_export.R - Export LEAN tables from dbdataset
 # NO explosions - just raw valid combinations from source
-# Filters applied based on existing rules in drugbank_generics.R
+# Applies normalization/standardization rules from existing scripts
 
 library(dbdataset)
 drugbank <- drugbank
@@ -10,25 +10,78 @@ output_dir <- file.path(getwd(), "output")
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 cat("============================================================\n")
-cat("LEAN DrugBank Export (with proper filters)\n")
+cat("LEAN DrugBank Export (with normalization)\n")
 cat("============================================================\n\n")
 
 # =============================================================================
-# SHARED: Build exclusion filter (vet drugs)
+# SHARED: Helper functions
+# =============================================================================
+
+# Collapse whitespace
+collapse_ws <- function(x) {
+  ifelse(is.na(x), NA_character_, trimws(gsub("\\s+", " ", as.character(x))))
+}
+
+# Normalize to uppercase, trim
+normalize_name <- function(x) {
+  toupper(trimws(x))
+}
+
+# Normalize key (lowercase, clean)
+normalize_key <- function(x) {
+  x <- tolower(trimws(x))
+  x <- gsub("\\s+", " ", x)
+  x <- gsub("[^a-z0-9 ]", "", x)
+  trimws(x)
+}
+
+# Split ingredients on + (from drugbank_mixtures.R logic)
+split_ingredients <- function(value) {
+  val <- collapse_ws(value)
+  if (is.na(val) || !nzchar(val)) return(character())
+  # Remove parenthetical content
+  repeat {
+    new_val <- gsub("(?<!\\S)\\([^()]*\\)(?=\\s|$)", " ", val, perl = TRUE)
+    if (identical(new_val, val)) break
+    val <- new_val
+  }
+  val <- gsub("\\s+", " ", val, perl = TRUE)
+  # Clean up commas before +
+  if (grepl("\\+", val)) {
+    val <- gsub(",\\s[^+]+(?=\\s*\\+)", "", val, perl = TRUE)
+  }
+  val <- gsub(",\\s[^+]+$", "", val, perl = TRUE)
+  # Split on +
+  parts <- if (grepl("\\+", val)) {
+    unlist(strsplit(val, "\\+", perl = TRUE), use.names = FALSE)
+  } else {
+    val
+  }
+  parts <- trimws(parts)
+  parts <- parts[nzchar(parts)]
+  unique(parts)
+}
+
+# Collapse to pipe-separated
+collapse_pipe <- function(values) {
+  vals <- unique(values[!is.na(values) & nzchar(values)])
+  if (!length(vals)) return(NA_character_)
+  paste(vals, collapse = "|")
+}
+
+# =============================================================================
+# SHARED: Build exclusion filter (vet-only drugs)
 # =============================================================================
 groups_raw <- drugbank$drugs$groups
 groups_raw$group_clean <- tolower(trimws(groups_raw$group))
 
-# Exclude vet-only drugs
+# Exclude vet-only drugs (vet_approved but NOT human approved)
 vet_ids <- unique(groups_raw$drugbank_id[groups_raw$group_clean == "vet_approved"])
 approved_ids <- unique(groups_raw$drugbank_id[groups_raw$group_clean == "approved"])
-# Drugs that are ONLY vet (no human approval)
 vet_only_ids <- setdiff(vet_ids, approved_ids)
 
 cat(sprintf("Total drugs in DB: %d\n", length(unique(drugbank$drugs$general_information$drugbank_id))))
-cat(sprintf("Vet-approved: %d\n", length(vet_ids)))
-cat(sprintf("Human-approved: %d\n", length(approved_ids)))
-cat(sprintf("Vet-ONLY (excluded): %d\n", length(vet_only_ids)))
+cat(sprintf("Vet-ONLY excluded: %d\n", length(vet_only_ids)))
 
 filter_vet <- function(df, id_col = "drugbank_id") {
   df[!(df[[id_col]] %in% vet_only_ids), ]
@@ -36,11 +89,11 @@ filter_vet <- function(df, id_col = "drugbank_id") {
 
 # =============================================================================
 # 1. GENERICS_LEAN - One row per drug (drugbank_id → name)
-#    Source: $drugs$general_information
 # =============================================================================
 cat("\n[1] generics_lean...\n")
 generics <- drugbank$drugs$general_information[, c("drugbank_id", "name", "type", "cas_number", "unii")]
-generics$name <- toupper(trimws(generics$name))
+generics$name <- normalize_name(generics$name)
+generics$name_key <- normalize_key(generics$name)
 generics <- filter_vet(generics)
 generics <- unique(generics)
 cat(sprintf("    %d rows\n", nrow(generics)))
@@ -48,31 +101,30 @@ write.csv(generics, file.path(output_dir, "generics_lean.csv"), row.names = FALS
 
 # =============================================================================
 # 2. SYNONYMS_LEAN - drugbank_id → synonym
-#    Source: $drugs$synonyms
-#    Filters: language == "english", coder has allowed values, not solely iupac
+#    Filters: english, has allowed coder, not ONLY iupac (iupac ok if others present)
 # =============================================================================
 cat("[2] synonyms_lean...\n")
 synonyms <- drugbank$drugs$synonyms
-synonyms$synonym <- toupper(trimws(synonyms$synonym))
+synonyms$synonym <- normalize_name(synonyms$synonym)
+synonyms$synonym_key <- normalize_key(synonyms$synonym)
 synonyms$language <- tolower(trimws(synonyms$language))
 synonyms$coder <- tolower(trimws(synonyms$coder))
 
 # Filter: English only
 synonyms <- synonyms[!is.na(synonyms$language) & grepl("english", synonyms$language, fixed = TRUE), ]
 
-# Filter: coder must exist and not be blank
+# Filter: coder must exist
 synonyms <- synonyms[!is.na(synonyms$coder) & synonyms$coder != "", ]
 
-# Allowed coders (INN, USAN, BAN, JAN, etc.)
+# Allowed coders
 allowed_coders <- c("inn", "usan", "ban", "jan", "dcj", "usp", "dcit")
 
-# Split coder tokens and filter
+# Split coder tokens
 split_coder <- function(x) {
   tokens <- unlist(strsplit(x, "[,;/\\s]+"))
   tokens <- tolower(trimws(tokens))
   tokens[tokens != ""]
 }
-
 synonyms$coder_tokens <- lapply(synonyms$coder, split_coder)
 
 # Keep if has at least one allowed coder
@@ -80,95 +132,104 @@ has_allowed <- sapply(synonyms$coder_tokens, function(vals) {
   length(vals) > 0 && any(vals %in% allowed_coders)
 })
 
-# Exclude if ONLY iupac
+# Exclude ONLY if coder is solely "iupac" (iupac + others is OK)
 only_iupac <- sapply(synonyms$coder_tokens, function(vals) {
-  length(vals) > 0 && all(vals == "iupac")
+  length(vals) > 0 && length(vals) == 1 && vals[1] == "iupac"
 })
 
-synonyms <- synonyms[has_allowed & !only_iupac, ]
+synonyms <- synonyms[has_allowed | !only_iupac, ]
 synonyms$coder_tokens <- NULL
 
-# Apply vet filter
 synonyms <- filter_vet(synonyms)
-synonyms <- unique(synonyms[, c("drugbank_id", "synonym", "coder")])
+synonyms <- unique(synonyms[, c("drugbank_id", "synonym", "synonym_key", "coder")])
 cat(sprintf("    %d rows\n", nrow(synonyms)))
 write.csv(synonyms, file.path(output_dir, "synonyms_lean.csv"), row.names = FALSE)
 
 # =============================================================================
 # 3. DOSAGES_LEAN - drugbank_id × form × route × strength (VALID combos)
-#    Source: $drugs$dosages
 # =============================================================================
 cat("[3] dosages_lean...\n")
 dosages <- drugbank$drugs$dosages[, c("drugbank_id", "form", "route", "strength")]
-dosages$form <- toupper(trimws(dosages$form))
-dosages$route <- toupper(trimws(dosages$route))
-dosages$strength <- toupper(trimws(dosages$strength))
+dosages$form <- normalize_name(dosages$form)
+dosages$route <- normalize_name(dosages$route)
+dosages$strength <- normalize_name(dosages$strength)
 dosages <- filter_vet(dosages)
 dosages <- unique(dosages)
 cat(sprintf("    %d rows\n", nrow(dosages)))
 write.csv(dosages, file.path(output_dir, "dosages_lean.csv"), row.names = FALSE)
 
 # =============================================================================
-# 4. GROUPS_LEAN - drugbank_id → group (for filtering)
-#    Source: $drugs$groups
+# 4. BRANDS_LEAN - brand → drugbank_id
 # =============================================================================
-cat("[4] groups_lean...\n")
-groups <- drugbank$drugs$groups[, c("drugbank_id", "group")]
-groups$group <- tolower(trimws(groups$group))
-groups <- unique(groups)
-cat(sprintf("    %d rows\n", nrow(groups)))
-write.csv(groups, file.path(output_dir, "groups_lean.csv"), row.names = FALSE)
-
-# =============================================================================
-# 5. BRANDS_LEAN - brand → drugbank_id
-#    Source: $drugs$international_brands
-# =============================================================================
-cat("[5] brands_lean...\n")
+cat("[4] brands_lean...\n")
 brands <- drugbank$drugs$international_brands[, c("drugbank_id", "brand", "company")]
-brands$brand <- toupper(trimws(brands$brand))
+brands$brand <- normalize_name(brands$brand)
+brands$brand_key <- normalize_key(brands$brand)
 brands <- filter_vet(brands)
 brands <- unique(brands)
 cat(sprintf("    %d rows\n", nrow(brands)))
 write.csv(brands, file.path(output_dir, "brands_lean.csv"), row.names = FALSE)
 
 # =============================================================================
-# 6. SALTS_LEAN - parent drugbank_id → salt info
-#    Source: $salts (top-level, not under $drugs)
+# 5. SALTS_LEAN - parent drugbank_id → salt info
 # =============================================================================
-cat("[6] salts_lean...\n")
+cat("[5] salts_lean...\n")
 salts <- drugbank$salts[, c("drugbank_id", "db_salt_id", "name", "cas_number", "unii", "inchikey")]
-salts$name <- toupper(trimws(salts$name))
+salts$name <- normalize_name(salts$name)
+salts$name_key <- normalize_key(salts$name)
 salts <- filter_vet(salts)
 salts <- unique(salts)
 cat(sprintf("    %d rows\n", nrow(salts)))
 write.csv(salts, file.path(output_dir, "salts_lean.csv"), row.names = FALSE)
 
 # =============================================================================
-# 7. MIXTURES_LEAN - mixture name, ingredients, drugbank_id
-#    Source: $drugs$mixtures
+# 6. MIXTURES_LEAN - with split components
+#    Splits ingredients on + and creates component keys
 # =============================================================================
-cat("[7] mixtures_lean...\n")
+cat("[6] mixtures_lean...\n")
 mixtures <- drugbank$drugs$mixtures[, c("drugbank_id", "name", "ingredients")]
-mixtures$name <- toupper(trimws(mixtures$name))
-mixtures$ingredients <- toupper(trimws(mixtures$ingredients))
+mixtures$mixture_name <- normalize_name(mixtures$name)
+mixtures$mixture_name_key <- normalize_key(mixtures$name)
+mixtures$ingredients_raw <- normalize_name(mixtures$ingredients)
+
+# Split ingredients into components
+mixtures$component_list <- lapply(mixtures$ingredients_raw, split_ingredients)
+mixtures$component_generics <- sapply(mixtures$component_list, function(parts) {
+  collapse_pipe(normalize_name(parts))
+})
+mixtures$component_keys <- sapply(mixtures$component_list, function(parts) {
+  collapse_pipe(normalize_key(parts))
+})
+mixtures$component_count <- sapply(mixtures$component_list, length)
+
+# Create sorted component key for matching
+mixtures$component_key_sorted <- sapply(mixtures$component_list, function(parts) {
+  keys <- sort(normalize_key(parts))
+  collapse_pipe(keys)
+})
+
+mixtures$component_list <- NULL
+mixtures$name <- NULL
+mixtures$ingredients <- NULL
+
 mixtures <- filter_vet(mixtures)
 mixtures <- unique(mixtures)
 cat(sprintf("    %d rows\n", nrow(mixtures)))
 write.csv(mixtures, file.path(output_dir, "mixtures_lean.csv"), row.names = FALSE)
 
 # =============================================================================
-# 8. PRODUCTS_LEAN - drugbank_id × dosage_form × strength × route
-#    Source: $products (top-level)
-#    Rule: name = generic name if generic==true, name = brand if generic==false
+# 7. PRODUCTS_LEAN - drugbank_id × dosage_form × strength × route
+#    name_type = "generic" if generic==true, else "brand"
 # =============================================================================
-cat("[8] products_lean...\n")
+cat("[7] products_lean...\n")
 products <- drugbank$products[, c("drugbank_id", "name", "labeller", "dosage_form", 
                                    "strength", "route", "generic", "approved", 
                                    "over_the_counter", "country", "source")]
-products$dosage_form <- toupper(trimws(products$dosage_form))
-products$strength <- toupper(trimws(products$strength))
-products$route <- toupper(trimws(products$route))
-products$name <- toupper(trimws(products$name))
+products$dosage_form <- normalize_name(products$dosage_form)
+products$strength <- normalize_name(products$strength)
+products$route <- normalize_name(products$route)
+products$name <- normalize_name(products$name)
+products$name_key <- normalize_key(products$name)
 
 # Add name_type column based on generic flag
 products$name_type <- ifelse(tolower(products$generic) == "true", "generic", "brand")
@@ -179,10 +240,9 @@ cat(sprintf("    %d rows\n", nrow(products)))
 write.csv(products, file.path(output_dir, "products_lean.csv"), row.names = FALSE)
 
 # =============================================================================
-# 9. ATC_LEAN - drugbank_id → atc_code (with hierarchy)
-#    Source: $drugs$atc_codes
+# 8. ATC_LEAN - drugbank_id → atc_code (with hierarchy)
 # =============================================================================
-cat("[9] atc_lean...\n")
+cat("[8] atc_lean...\n")
 atc <- drugbank$drugs$atc_codes[, c("drugbank_id", "atc_code", 
                                      "level_1", "code_1", 
                                      "level_2", "code_2",
@@ -199,16 +259,15 @@ write.csv(atc, file.path(output_dir, "atc_lean.csv"), row.names = FALSE)
 # Summary
 # =============================================================================
 cat("\n============================================================\n")
-cat("Summary (all vet-only drugs excluded)\n")
+cat("Summary (vet-only excluded, normalized)\n")
 cat("============================================================\n")
-cat(sprintf("  generics_lean:  %6d (one per drug)\n", nrow(generics)))
-cat(sprintf("  synonyms_lean:  %6d (english, allowed coders, not only iupac)\n", nrow(synonyms)))
+cat(sprintf("  generics_lean:  %6d (one per drug, with name_key)\n", nrow(generics)))
+cat(sprintf("  synonyms_lean:  %6d (english, allowed coders, iupac ok if not alone)\n", nrow(synonyms)))
 cat(sprintf("  dosages_lean:   %6d (valid form × route × strength)\n", nrow(dosages)))
-cat(sprintf("  groups_lean:    %6d (for filtering)\n", nrow(groups)))
-cat(sprintf("  brands_lean:    %6d (international brands)\n", nrow(brands)))
-cat(sprintf("  salts_lean:     %6d (salt forms)\n", nrow(salts)))
-cat(sprintf("  mixtures_lean:  %6d (mixture ingredients)\n", nrow(mixtures)))
-cat(sprintf("  products_lean:  %6d (product details, name_type=generic/brand)\n", nrow(products)))
-cat(sprintf("  atc_lean:       %6d (ATC codes with hierarchy)\n", nrow(atc)))
+cat(sprintf("  brands_lean:    %6d (with brand_key)\n", nrow(brands)))
+cat(sprintf("  salts_lean:     %6d (with name_key)\n", nrow(salts)))
+cat(sprintf("  mixtures_lean:  %6d (with split components, component_key_sorted)\n", nrow(mixtures)))
+cat(sprintf("  products_lean:  %6d (name_type=generic/brand, with name_key)\n", nrow(products)))
+cat(sprintf("  atc_lean:       %6d (with hierarchy)\n", nrow(atc)))
 cat("============================================================\n")
 cat("Files saved to:", output_dir, "\n")
