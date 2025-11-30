@@ -59,12 +59,19 @@ split_ingredients <- function(value) {
   }
   parts <- trimws(parts)
   parts <- parts[nzchar(parts)]
-  unique(parts)
+  parts[order(tolower(parts), parts)] |> unique()  # consistent ordering
+}
+
+# Unique with consistent ordering (lowercase sort, then unique)
+unique_canonical <- function(values) {
+  vals <- values[!is.na(values) & nzchar(values)]
+  if (!length(vals)) return(character())
+  vals[order(tolower(vals), vals)] |> unique()
 }
 
 # Collapse to pipe-separated
 collapse_pipe <- function(values) {
-  vals <- unique(values[!is.na(values) & nzchar(values)])
+  vals <- unique_canonical(values)
   if (!length(vals)) return(NA_character_)
   paste(vals, collapse = "|")
 }
