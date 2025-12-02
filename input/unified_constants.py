@@ -791,6 +791,62 @@ MULTIWORD_GENERICS: Set[str] = {
 
 
 # ============================================================================
+# TEXT NORMALIZATION UTILITIES
+# These are included here so submodules only need to import unified_constants.py
+# ============================================================================
+
+import re as _re
+import unicodedata as _unicodedata
+
+# Pre-compiled patterns for normalize_text
+_GM_TOKEN_RX = _re.compile(r"(?<![a-z])gms?(?![a-z])")
+
+# Lowercase form words for matching (sorted by length, longest first)
+_FORM_WORDS_LOWER = sorted(
+    {k.lower() for k in FORM_TO_ROUTE.keys()},
+    key=len, reverse=True
+)
+
+def normalize_text(s: str) -> str:
+    """
+    Produce the canonical normalized text used for matching and parsing.
+    
+    This is the standard text normalization function used across the pipeline.
+    Converts to lowercase, normalizes unicode, expands abbreviations, etc.
+    """
+    if not isinstance(s, str):
+        return ""
+    s = _unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not _unicodedata.combining(c))
+    s = s.lower()
+    s = _re.sub(r"\biv\b", "intravenous", s)
+    s = _re.sub(r"[^\w%/+\.\- ]+", " ", s)
+    s = s.replace("microgram", "mcg").replace("μg", "mcg").replace("µg", "mcg")
+    s = _re.sub(r"(?<![a-z])cc(?![a-z])", "ml", s).replace("milli litre", "ml").replace("milliliter", "ml")
+    s = _GM_TOKEN_RX.sub("g", s)
+    s = s.replace("milligram", "mg")
+    s = s.replace("polymixin", "polymyxin")
+    s = s.replace("hydrochlorde", "hydrochloride")
+    s = _re.sub(r"\s+", " ", s).strip()
+    return s
+
+def parse_form_from_text(s_norm: str) -> str | None:
+    """
+    Extract a recognized dosage form keyword from normalized text.
+    
+    Args:
+        s_norm: Normalized text (should be output of normalize_text())
+    
+    Returns:
+        The first matching form keyword, or None if not found.
+    """
+    for fw in _FORM_WORDS_LOWER:
+        if _re.search(rf"\b{_re.escape(fw)}\b", s_norm):
+            return fw
+    return None
+
+
+# ============================================================================
 # EXPORTS
 # ============================================================================
 
@@ -830,4 +886,7 @@ __all__ = [
     "is_element_drug", "is_unit_token", "is_combination_atc",
     "forms_are_equivalent", "infer_route_from_form",
     "parse_compound_salt", "get_related_salts",
+    
+    # Text utilities (for submodules)
+    "normalize_text", "parse_form_from_text",
 ]
