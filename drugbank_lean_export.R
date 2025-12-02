@@ -2,12 +2,23 @@
 # drugbank_lean_export.R - Export LEAN tables from dbdataset
 # NO explosions - just raw valid combinations from source
 # Applies normalization/standardization rules from existing scripts
+# Exports BOTH CSV and Parquet (parquet-first policy per AGENTS.md)
 
 library(dbdataset)
+library(arrow)  # For parquet export
+
 drugbank <- drugbank
 
 output_dir <- file.path(getwd(), "output")
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Helper: write both CSV and parquet
+write_both <- function(df, basename) {
+  csv_path <- file.path(output_dir, paste0(basename, ".csv"))
+  parquet_path <- file.path(output_dir, paste0(basename, ".parquet"))
+  write.csv(df, csv_path, row.names = FALSE)
+  arrow::write_parquet(df, parquet_path)
+}
 
 cat("============================================================\n")
 cat("LEAN DrugBank Export (with normalization)\n")
@@ -112,7 +123,7 @@ generics$name_key <- normalize_key(generics$name)
 generics <- filter_vet(generics)
 generics <- unique(generics)
 cat(sprintf("    %d rows\n", nrow(generics)))
-write.csv(generics, file.path(output_dir, "generics_lean.csv"), row.names = FALSE)
+write_both(generics, "generics_lean")
 
 # =============================================================================
 # 2. SYNONYMS_LEAN - drugbank_id → synonym
@@ -158,7 +169,7 @@ synonyms$coder_tokens <- NULL
 synonyms <- filter_vet(synonyms)
 synonyms <- unique(synonyms[, c("drugbank_id", "synonym", "synonym_key", "coder")])
 cat(sprintf("    %d rows\n", nrow(synonyms)))
-write.csv(synonyms, file.path(output_dir, "synonyms_lean.csv"), row.names = FALSE)
+write_both(synonyms, "synonyms_lean")
 
 # =============================================================================
 # 3. DOSAGES_LEAN - drugbank_id × form × route × strength (VALID combos)
@@ -171,7 +182,7 @@ dosages$strength <- normalize_name(dosages$strength)
 dosages <- filter_vet(dosages)
 dosages <- unique(dosages)
 cat(sprintf("    %d rows\n", nrow(dosages)))
-write.csv(dosages, file.path(output_dir, "dosages_lean.csv"), row.names = FALSE)
+write_both(dosages, "dosages_lean")
 
 # =============================================================================
 # 4. BRANDS_LEAN - brand → drugbank_id (with trademark removal)
@@ -183,7 +194,7 @@ brands$brand_key <- normalize_key(brands$brand)
 brands <- filter_vet(brands)
 brands <- unique(brands)
 cat(sprintf("    %d rows\n", nrow(brands)))
-write.csv(brands, file.path(output_dir, "brands_lean.csv"), row.names = FALSE)
+write_both(brands, "brands_lean")
 
 # =============================================================================
 # 5. SALTS_LEAN - parent drugbank_id → salt info
@@ -195,7 +206,7 @@ salts$name_key <- normalize_key(salts$name)
 salts <- filter_vet(salts)
 salts <- unique(salts)
 cat(sprintf("    %d rows\n", nrow(salts)))
-write.csv(salts, file.path(output_dir, "salts_lean.csv"), row.names = FALSE)
+write_both(salts, "salts_lean")
 
 # =============================================================================
 # 6. MIXTURES_LEAN - with split components
@@ -230,7 +241,7 @@ mixtures$ingredients <- NULL
 mixtures <- filter_vet(mixtures)
 mixtures <- unique(mixtures)
 cat(sprintf("    %d rows\n", nrow(mixtures)))
-write.csv(mixtures, file.path(output_dir, "mixtures_lean.csv"), row.names = FALSE)
+write_both(mixtures, "mixtures_lean")
 
 # =============================================================================
 # 7. PRODUCTS_LEAN - drugbank_id × dosage_form × strength × route
@@ -252,7 +263,7 @@ products$name_type <- ifelse(tolower(products$generic) == "true", "generic", "br
 products <- filter_vet(products)
 products <- unique(products)
 cat(sprintf("    %d rows\n", nrow(products)))
-write.csv(products, file.path(output_dir, "products_lean.csv"), row.names = FALSE)
+write_both(products, "products_lean")
 
 # =============================================================================
 # 8. ATC_LEAN - drugbank_id → atc_code (with hierarchy)
@@ -268,7 +279,7 @@ atc <- filter_vet(atc)
 atc <- atc[!is.na(atc$atc_code) & atc$atc_code != "", ]
 atc <- unique(atc)
 cat(sprintf("    %d rows\n", nrow(atc)))
-write.csv(atc, file.path(output_dir, "atc_lean.csv"), row.names = FALSE)
+write_both(atc, "atc_lean")
 
 # =============================================================================
 # 9. LOOKUP TABLES - Canonical mappings for normalization
@@ -299,7 +310,7 @@ salt_suffixes_df <- data.frame(
   salt_suffix_key = tolower(salt_suffixes),
   stringsAsFactors = FALSE
 )
-write.csv(salt_suffixes_df, file.path(output_dir, "lookup_salt_suffixes.csv"), row.names = FALSE)
+write_both(salt_suffixes_df, "lookup_salt_suffixes")
 cat(sprintf("    salt_suffixes: %d\n", nrow(salt_suffixes_df)))
 
 # Pure salt compounds (should NOT have salt stripped - the whole thing IS the salt)
@@ -328,7 +339,7 @@ pure_salts_df <- data.frame(
   compound_key = tolower(pure_salt_compounds),
   stringsAsFactors = FALSE
 )
-write.csv(pure_salts_df, file.path(output_dir, "lookup_pure_salts.csv"), row.names = FALSE)
+write_both(pure_salts_df, "lookup_pure_salts")
 cat(sprintf("    pure_salts: %d\n", nrow(pure_salts_df)))
 
 # Form canonical map (normalize dosage form names)
@@ -357,7 +368,7 @@ form_canonical <- data.frame(
                 "SPRAY", "SPRAY", "SOLUTION", "SOLUTION", "MDI"),
   stringsAsFactors = FALSE
 )
-write.csv(form_canonical, file.path(output_dir, "lookup_form_canonical.csv"), row.names = FALSE)
+write_both(form_canonical, "lookup_form_canonical")
 cat(sprintf("    form_canonical: %d\n", nrow(form_canonical)))
 
 # Route alias map (normalize route names)
@@ -394,7 +405,7 @@ route_canonical <- data.frame(
                 "URETHRAL", "INTRAVESICAL", "ENDOTRACHEAL", "SUBCUTANEOUS"),
   stringsAsFactors = FALSE
 )
-write.csv(route_canonical, file.path(output_dir, "lookup_route_canonical.csv"), row.names = FALSE)
+write_both(route_canonical, "lookup_route_canonical")
 cat(sprintf("    route_canonical: %d\n", nrow(route_canonical)))
 
 # Form to route inference (infer route from form when not specified)
@@ -419,7 +430,7 @@ form_to_route <- data.frame(
             "SUBCUTANEOUS", "SUBCUTANEOUS"),
   stringsAsFactors = FALSE
 )
-write.csv(form_to_route, file.path(output_dir, "lookup_form_to_route.csv"), row.names = FALSE)
+write_both(form_to_route, "lookup_form_to_route")
 cat(sprintf("    form_to_route: %d\n", nrow(form_to_route)))
 
 # Per-unit map (normalize dosage units)
@@ -450,7 +461,7 @@ per_unit <- data.frame(
                 "VIAL", "VIAL"),
   stringsAsFactors = FALSE
 )
-write.csv(per_unit, file.path(output_dir, "lookup_per_unit.csv"), row.names = FALSE)
+write_both(per_unit, "lookup_per_unit")
 cat(sprintf("    per_unit: %d\n", nrow(per_unit)))
 
 # =============================================================================
