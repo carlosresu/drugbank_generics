@@ -76,6 +76,14 @@ collapse_pipe <- function(values) {
   paste(vals, collapse = "|")
 }
 
+# Normalize brand name (remove trademark symbols)
+normalize_brand <- function(x) {
+  val <- collapse_ws(x)
+  if (is.na(val)) return(NA_character_)
+  val <- gsub("[®™©]", "", val, perl = TRUE)
+  trimws(gsub("\\s+", " ", val))
+}
+
 # =============================================================================
 # SHARED: Build exclusion filter (vet-only drugs)
 # =============================================================================
@@ -166,11 +174,11 @@ cat(sprintf("    %d rows\n", nrow(dosages)))
 write.csv(dosages, file.path(output_dir, "dosages_lean.csv"), row.names = FALSE)
 
 # =============================================================================
-# 4. BRANDS_LEAN - brand → drugbank_id
+# 4. BRANDS_LEAN - brand → drugbank_id (with trademark removal)
 # =============================================================================
 cat("[4] brands_lean...\n")
 brands <- drugbank$drugs$international_brands[, c("drugbank_id", "brand", "company")]
-brands$brand <- normalize_name(brands$brand)
+brands$brand <- sapply(brands$brand, function(x) normalize_name(normalize_brand(x)))
 brands$brand_key <- normalize_key(brands$brand)
 brands <- filter_vet(brands)
 brands <- unique(brands)
@@ -263,18 +271,209 @@ cat(sprintf("    %d rows\n", nrow(atc)))
 write.csv(atc, file.path(output_dir, "atc_lean.csv"), row.names = FALSE)
 
 # =============================================================================
+# 9. LOOKUP TABLES - Canonical mappings for normalization
+# =============================================================================
+cat("[9] Lookup tables...\n")
+
+# Salt suffixes (for stripping from generic names)
+salt_suffixes <- c(
+  "HYDROCHLORIDE", "HCL", "DIHYDROCHLORIDE",
+  "SODIUM", "POTASSIUM", "CALCIUM", "MAGNESIUM", "ZINC", "IRON", "ALUMINUM", "ALUMINIUM",
+  "SULFATE", "SULPHATE", "BISULFATE",
+  "PHOSPHATE", "DIPHOSPHATE",
+  "ACETATE", "DIACETATE",
+  "CITRATE", "MALATE", "MALEATE", "FUMARATE", "TARTRATE", "SUCCINATE", "LACTATE", "GLUCONATE",
+  "NITRATE", "CHLORIDE", "BROMIDE", "IODIDE", "FLUORIDE",
+  "CARBONATE", "BICARBONATE",
+  "OXIDE", "HYDROXIDE",
+  "MESYLATE", "MESILATE", "BESYLATE", "BESILATE", "TOSYLATE",
+  "STEARATE", "PALMITATE", "OLEATE",
+  "PROPIONATE", "BUTYRATE", "VALERATE",
+  "BENZOATE", "SALICYLATE",
+  "TROMETHAMINE", "TROMETAMOL", "MEGLUMINE",
+  "HYDROBROMIDE", "HYDROIODIDE",
+  "MONOHYDRATE", "DIHYDRATE", "TRIHYDRATE", "HEMIHYDRATE", "ANHYDROUS"
+)
+salt_suffixes_df <- data.frame(
+  salt_suffix = salt_suffixes,
+  salt_suffix_key = tolower(salt_suffixes),
+  stringsAsFactors = FALSE
+)
+write.csv(salt_suffixes_df, file.path(output_dir, "lookup_salt_suffixes.csv"), row.names = FALSE)
+cat(sprintf("    salt_suffixes: %d\n", nrow(salt_suffixes_df)))
+
+# Pure salt compounds (should NOT have salt stripped - the whole thing IS the salt)
+pure_salt_compounds <- c(
+  "SODIUM CHLORIDE", "POTASSIUM CHLORIDE", "CALCIUM CHLORIDE", "MAGNESIUM CHLORIDE",
+  "SODIUM BICARBONATE", "POTASSIUM BICARBONATE", "CALCIUM CARBONATE", "MAGNESIUM CARBONATE",
+  "SODIUM SULFATE", "POTASSIUM SULFATE", "MAGNESIUM SULFATE", "CALCIUM SULFATE",
+  "SODIUM PHOSPHATE", "POTASSIUM PHOSPHATE", "CALCIUM PHOSPHATE",
+  "SODIUM ACETATE", "POTASSIUM ACETATE", "CALCIUM ACETATE",
+  "SODIUM CITRATE", "POTASSIUM CITRATE", "CALCIUM CITRATE", "MAGNESIUM CITRATE",
+  "SODIUM LACTATE", "CALCIUM LACTATE",
+  "SODIUM GLUCONATE", "CALCIUM GLUCONATE", "MAGNESIUM GLUCONATE", "POTASSIUM GLUCONATE",
+  "FERROUS SULFATE", "FERROUS FUMARATE", "FERROUS GLUCONATE", "FERRIC SULFATE",
+  "ZINC SULFATE", "ZINC OXIDE", "ZINC GLUCONATE",
+  "CALCIUM HYDROXIDE", "MAGNESIUM HYDROXIDE", "ALUMINUM HYDROXIDE",
+  "SODIUM HYDROXIDE", "POTASSIUM HYDROXIDE",
+  "SODIUM FLUORIDE", "POTASSIUM FLUORIDE",
+  "SODIUM IODIDE", "POTASSIUM IODIDE",
+  "SODIUM BROMIDE", "POTASSIUM BROMIDE",
+  "SODIUM NITRATE", "POTASSIUM NITRATE",
+  "BARIUM SULFATE",
+  "LITHIUM CARBONATE", "LITHIUM CITRATE"
+)
+pure_salts_df <- data.frame(
+  compound = pure_salt_compounds,
+  compound_key = tolower(pure_salt_compounds),
+  stringsAsFactors = FALSE
+)
+write.csv(pure_salts_df, file.path(output_dir, "lookup_pure_salts.csv"), row.names = FALSE)
+cat(sprintf("    pure_salts: %d\n", nrow(pure_salts_df)))
+
+# Form canonical map (normalize dosage form names)
+form_canonical <- data.frame(
+  alias = c("tab", "tabs", "tablet", "tablets", "chewing gum",
+            "cap", "caps", "capsule", "capsulee", "capsules",
+            "susp", "suspension", "syr", "syrup",
+            "sol", "soln", "solution", "inhal.solution", "instill.solution", "lamella",
+            "ointment", "oint", "gel", "cream", "lotion",
+            "patch", "supp", "suppository",
+            "dpi", "inhal.powder", "mdi", "inhal.aerosol", "oral aerosol",
+            "ampu", "ampul", "ampule", "ampoule", "amp", "vial",
+            "inj", "injection", "implant", "s.c. implant",
+            "metered dose inhaler", "dry powder inhaler",
+            "spray", "nasal spray", "nebule", "neb", "inhaler"),
+  canonical = c("TABLET", "TABLET", "TABLET", "TABLET", "TABLET",
+                "CAPSULE", "CAPSULE", "CAPSULE", "CAPSULE", "CAPSULE",
+                "SUSPENSION", "SUSPENSION", "SYRUP", "SYRUP",
+                "SOLUTION", "SOLUTION", "SOLUTION", "SOLUTION", "SOLUTION", "SOLUTION",
+                "OINTMENT", "OINTMENT", "GEL", "CREAM", "LOTION",
+                "PATCH", "SUPPOSITORY", "SUPPOSITORY",
+                "DPI", "DPI", "MDI", "MDI", "MDI",
+                "AMPULE", "AMPULE", "AMPULE", "AMPULE", "AMPULE", "VIAL",
+                "INJECTION", "INJECTION", "IMPLANT", "IMPLANT",
+                "MDI", "DPI",
+                "SPRAY", "SPRAY", "SOLUTION", "SOLUTION", "MDI"),
+  stringsAsFactors = FALSE
+)
+write.csv(form_canonical, file.path(output_dir, "lookup_form_canonical.csv"), row.names = FALSE)
+cat(sprintf("    form_canonical: %d\n", nrow(form_canonical)))
+
+# Route alias map (normalize route names)
+route_canonical <- data.frame(
+  alias = c("oral", "po", "per orem", "per os", "by mouth",
+            "iv", "intravenous",
+            "im", "intramuscular",
+            "sc", "subcut", "subcutaneous", "subdermal",
+            "sl", "sublingual", "bucc", "buccal",
+            "topical", "cutaneous",
+            "dermal", "td", "transdermal",
+            "oph", "eye", "ophthalmic",
+            "otic", "ear",
+            "inh", "neb", "inhalation", "inhaler",
+            "rectal", "per rectum", "pr",
+            "vaginal", "per vaginam", "pv",
+            "intrathecal", "intranasal", "nasal", "per nasal",
+            "intradermal", "id",
+            "urethral", "intravesical", "endotracheal", "s.c. implant"),
+  canonical = c("ORAL", "ORAL", "ORAL", "ORAL", "ORAL",
+                "INTRAVENOUS", "INTRAVENOUS",
+                "INTRAMUSCULAR", "INTRAMUSCULAR",
+                "SUBCUTANEOUS", "SUBCUTANEOUS", "SUBCUTANEOUS", "SUBCUTANEOUS",
+                "SUBLINGUAL", "SUBLINGUAL", "BUCCAL", "BUCCAL",
+                "TOPICAL", "TOPICAL",
+                "TRANSDERMAL", "TRANSDERMAL", "TRANSDERMAL",
+                "OPHTHALMIC", "OPHTHALMIC", "OPHTHALMIC",
+                "OTIC", "OTIC",
+                "INHALATION", "INHALATION", "INHALATION", "INHALATION",
+                "RECTAL", "RECTAL", "RECTAL",
+                "VAGINAL", "VAGINAL", "VAGINAL",
+                "INTRATHECAL", "NASAL", "NASAL", "NASAL",
+                "INTRADERMAL", "INTRADERMAL",
+                "URETHRAL", "INTRAVESICAL", "ENDOTRACHEAL", "SUBCUTANEOUS"),
+  stringsAsFactors = FALSE
+)
+write.csv(route_canonical, file.path(output_dir, "lookup_route_canonical.csv"), row.names = FALSE)
+cat(sprintf("    route_canonical: %d\n", nrow(route_canonical)))
+
+# Form to route inference (infer route from form when not specified)
+form_to_route <- data.frame(
+  form = c("tablet", "capsule", "syrup", "suspension", "solution", "sachet",
+           "drop", "eye drop", "ear drop",
+           "cream", "ointment", "gel", "lotion",
+           "patch",
+           "inhaler", "nebule", "neb", "mdi", "dpi",
+           "ampoule", "amp", "ampul", "ampule", "vial", "inj", "injection",
+           "suppository", "supp",
+           "spray", "nasal spray",
+           "implant", "s.c. implant"),
+  route = c("ORAL", "ORAL", "ORAL", "ORAL", "ORAL", "ORAL",
+            "OPHTHALMIC", "OPHTHALMIC", "OTIC",
+            "TOPICAL", "TOPICAL", "TOPICAL", "TOPICAL",
+            "TRANSDERMAL",
+            "INHALATION", "INHALATION", "INHALATION", "INHALATION", "INHALATION",
+            "INTRAVENOUS", "INTRAVENOUS", "INTRAVENOUS", "INTRAVENOUS", "INTRAVENOUS", "INTRAVENOUS", "INTRAVENOUS",
+            "RECTAL", "RECTAL",
+            "NASAL", "NASAL",
+            "SUBCUTANEOUS", "SUBCUTANEOUS"),
+  stringsAsFactors = FALSE
+)
+write.csv(form_to_route, file.path(output_dir, "lookup_form_to_route.csv"), row.names = FALSE)
+cat(sprintf("    form_to_route: %d\n", nrow(form_to_route)))
+
+# Per-unit map (normalize dosage units)
+per_unit <- data.frame(
+  alias = c("ml", "l",
+            "tab", "tabs", "tablet", "tablets", "chewing gum",
+            "cap", "caps", "capsule", "capsules",
+            "sachet", "sachets",
+            "drop", "drops", "gtt",
+            "actuation", "actuations",
+            "spray", "sprays",
+            "puff", "puffs",
+            "dose", "doses",
+            "application", "applications",
+            "ampule", "ampules", "ampoule", "ampoules", "amp",
+            "vial", "vials"),
+  canonical = c("ML", "L",
+                "TABLET", "TABLET", "TABLET", "TABLET", "TABLET",
+                "CAPSULE", "CAPSULE", "CAPSULE", "CAPSULE",
+                "SACHET", "SACHET",
+                "DROP", "DROP", "DROP",
+                "ACTUATION", "ACTUATION",
+                "SPRAY", "SPRAY",
+                "PUFF", "PUFF",
+                "DOSE", "DOSE",
+                "APPLICATION", "APPLICATION",
+                "AMPULE", "AMPULE", "AMPULE", "AMPULE", "AMPULE",
+                "VIAL", "VIAL"),
+  stringsAsFactors = FALSE
+)
+write.csv(per_unit, file.path(output_dir, "lookup_per_unit.csv"), row.names = FALSE)
+cat(sprintf("    per_unit: %d\n", nrow(per_unit)))
+
+# =============================================================================
 # Summary
 # =============================================================================
 cat("\n============================================================\n")
 cat("Summary (vet-only excluded, normalized)\n")
 cat("============================================================\n")
+cat("Data tables:\n")
 cat(sprintf("  generics_lean:  %6d (one per drug, with name_key)\n", nrow(generics)))
 cat(sprintf("  synonyms_lean:  %6d (english, allowed coders, iupac ok if not alone)\n", nrow(synonyms)))
 cat(sprintf("  dosages_lean:   %6d (valid form × route × strength)\n", nrow(dosages)))
-cat(sprintf("  brands_lean:    %6d (with brand_key)\n", nrow(brands)))
+cat(sprintf("  brands_lean:    %6d (with trademark symbols removed)\n", nrow(brands)))
 cat(sprintf("  salts_lean:     %6d (with name_key)\n", nrow(salts)))
 cat(sprintf("  mixtures_lean:  %6d (with split components, component_key_sorted)\n", nrow(mixtures)))
-cat(sprintf("  products_lean:  %6d (name_type=generic/brand, with name_key)\n", nrow(products)))
+cat(sprintf("  products_lean:  %6d (name_type=generic/brand)\n", nrow(products)))
 cat(sprintf("  atc_lean:       %6d (with hierarchy)\n", nrow(atc)))
+cat("\nLookup tables:\n")
+cat(sprintf("  lookup_salt_suffixes:   %3d (for stripping salts)\n", nrow(salt_suffixes_df)))
+cat(sprintf("  lookup_pure_salts:      %3d (compounds that ARE salts)\n", nrow(pure_salts_df)))
+cat(sprintf("  lookup_form_canonical:  %3d (form normalization)\n", nrow(form_canonical)))
+cat(sprintf("  lookup_route_canonical: %3d (route normalization)\n", nrow(route_canonical)))
+cat(sprintf("  lookup_form_to_route:   %3d (infer route from form)\n", nrow(form_to_route)))
+cat(sprintf("  lookup_per_unit:        %3d (dose unit normalization)\n", nrow(per_unit)))
 cat("============================================================\n")
 cat("Files saved to:", output_dir, "\n")
