@@ -291,8 +291,8 @@ find_generics_master_path <- function(script_dir, filename) {
     if (is.na(base) || !nzchar(base)) next
     extra_dirs <- c(extra_dirs,
       file.path(base, "github_repos", "drugbank_generics"),
-      file.path(base, "github_repos", "esoa"),
-      file.path(base, "github_repos", "esoa", "dependencies", "drugbank_generics")
+      file.path(base, "github_repos", "pids-drg-esoa"),
+      file.path(base, "github_repos", "pids-drg-esoa", "dependencies", "drugbank_generics")
     )
   }
   base_dirs <- unique(vapply(c(base_dirs, extra_dirs), function(p) normalizePath(p, mustWork = FALSE), character(1)))
