@@ -9,7 +9,7 @@ Sources: constants.py, combos_drugs.py, text_utils_drugs.py, routes_forms_drugs.
          generic_normalization.py, scoring.py, and debug/old_files/*.py
 """
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # ============================================================================
 # TOKEN CATEGORIES
@@ -1166,6 +1166,33 @@ SPELLING_SYNONYMS: Dict[str, str] = {
     "ALCOHOL ETHYL": "ETHANOL",  # Annex F format: "ALCOHOL, ETHYL"
     "ISOPROPYL ALCOHOL": "ISOPROPANOL",
     "ALCOHOL ISOPROPYL": "ISOPROPANOL",
+    # IV Solutions - Philippine formulary names
+    "ACETATED RINGER'S SOLUTION": "RINGER'S SOLUTION, ACETATED",
+    "ACETATED RINGER'S": "RINGER'S SOLUTION, ACETATED",
+    "RINGER'S SOLUTION ACETATED": "RINGER'S SOLUTION, ACETATED",
+    "LACTATED RINGER'S SOLUTION": "RINGER'S SOLUTION, LACTATED",
+    "LACTATED RINGER'S": "RINGER'S SOLUTION, LACTATED",
+    "RINGER'S LACTATE": "RINGER'S SOLUTION, LACTATED",
+    # Amino acid solutions (parenteral nutrition)
+    "AMINO ACID SOLUTIONS FOR HEPATIC FAILURE": "AMINO ACIDS",
+    "AMINO ACID SOLUTIONS FOR INFANTS": "AMINO ACIDS",
+    "AMINO ACID SOLUTIONS FOR RENAL CONDITIONS": "AMINO ACIDS",
+    "AMINO ACID SOLUTIONS FOR IMMUNONUTRITION": "AMINO ACIDS",
+    "AMINO ACID SOLUTIONS": "AMINO ACIDS",
+    "AMINO ACID SOLUTION": "AMINO ACIDS",
+    # Combination drugs - Annex F format
+    "ALUMINUM HYDROXIDE + MAGNESIUM HYDROXIDE": "ALUMINIUM HYDROXIDE + MAGNESIUM HYDROXIDE",
+    "AMPICILLIN + SULBACTAM": "SULTAMICILLIN",  # Combination has ATC J01CR04
+    "ALENDRONATE + CHOLECALCIFEROL": "ALENDRONATE + VITAMIN D",
+    "CHOLECALCIFEROL": "VITAMIN D3",
+    "VIT. D3": "VITAMIN D3",
+    # Philippine herbal medicine
+    "AKAPULKO": "CASSIA ALATA",
+    # Vitamin combinations
+    "VITAMINS INTRAVENOUS FAT-SOLUBLE": "VITAMINS A, D, E AND K",
+    "VITAMINS INTRAVENOUS WATER-SOLUBLE": "VITAMIN B COMPLEX + VITAMIN C",
+    "VITAMIN INTRAVENOUS FAT-SOLUBLE": "VITAMINS A, D, E AND K",
+    "VITAMIN INTRAVENOUS WATER-SOLUBLE": "VITAMIN B COMPLEX + VITAMIN C",
 }
 
 # ============================================================================
@@ -1288,6 +1315,166 @@ def parse_form_from_text(s_norm: str) -> str | None:
 
 
 # ============================================================================
+# CANONICAL GENERICS - DrugBank-preferred names with DrugBank IDs
+# These are combination drugs or special products that need explicit DrugBank IDs
+# Only use when DrugBank doesn't already have the combination
+# ============================================================================
+
+CANONICAL_GENERICS: List[Dict[str, Any]] = [
+    # Combination antibiotics
+    {"drugbank_id": "DB00766", "generic_name": "AMOXICILLIN + CLAVULANIC ACID", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "COTRIMOXAZOLE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "SULFAMETHOXAZOLE + TRIMETHOPRIM", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "AMPICILLIN + SULBACTAM", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "SULTAMICILLIN", "source": "canonical"},
+    # IV Solutions
+    {"drugbank_id": None, "generic_name": "ACETATED RINGER'S SOLUTION", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "RINGER'S SOLUTION, ACETATED", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "LACTATED RINGER'S SOLUTION", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "RINGER'S SOLUTION, LACTATED", "source": "canonical"},
+    # Parenteral nutrition
+    {"drugbank_id": None, "generic_name": "AMINO ACIDS", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR HEPATIC FAILURE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR INFANTS", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR RENAL CONDITIONS", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR IMMUNONUTRITION/IMMUNOENHANCEMENT", "source": "canonical"},
+    # Antacid combinations - DB06723 is Maalox (aluminum hydroxide + magnesium hydroxide)
+    {"drugbank_id": "DB06723", "generic_name": "ALUMINIUM HYDROXIDE + MAGNESIUM HYDROXIDE", "source": "canonical"},
+    {"drugbank_id": "DB06723", "generic_name": "ALUMINUM HYDROXIDE + MAGNESIUM HYDROXIDE", "source": "canonical"},
+    # Vitamin combinations
+    {"drugbank_id": None, "generic_name": "ALENDRONATE + CHOLECALCIFEROL", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "VITAMINS INTRAVENOUS, FAT-SOLUBLE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "VITAMINS INTRAVENOUS, WATER-SOLUBLE", "source": "canonical"},
+    # Philippine herbal
+    {"drugbank_id": None, "generic_name": "AKAPULKO", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "CASSIA ALATA", "source": "canonical"},
+    # Topical combinations - DB00443 is Enstilar (calcipotriol + betamethasone)
+    {"drugbank_id": None, "generic_name": "BENZOIC ACID + SALICYLIC ACID", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "BACITRACIN + NEOMYCIN + POLYMYXIN B", "source": "canonical"},
+    {"drugbank_id": "DB00443", "generic_name": "CALCIPOTRIOL + BETAMETHASONE", "source": "canonical"},
+    # Respiratory combinations - DB01222 is Budesonide/Formoterol
+    {"drugbank_id": "DB01222", "generic_name": "BUDESONIDE + FORMOTEROL", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "SALMETEROL + FLUTICASONE", "source": "canonical"},
+    # Calcium + Vitamin D combinations
+    {"drugbank_id": None, "generic_name": "CALCIUM CARBONATE + CHOLECALCIFEROL", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "CALCIUM + VITAMIN D", "source": "canonical"},
+    # Dialysis solutions
+    {"drugbank_id": None, "generic_name": "DIALYSATE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "DIALYSATE (ACETATE BASED)", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "DIALYSATE (BICARBONATE BASED)", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "DOUSOL", "source": "canonical"},
+    # Insulin - DB00030 is insulin human
+    {"drugbank_id": "DB00030", "generic_name": "BIPHASIC ISOPHANE HUMAN INSULIN", "source": "canonical"},
+    {"drugbank_id": "DB00030", "generic_name": "INSULIN HUMAN", "source": "canonical"},
+    # Vaccines (CDC standard abbreviations) - using DrugBank mixture IDs where available
+    {"drugbank_id": None, "generic_name": "DIPHTHERIA-TETANUS TOXOIDS", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "DT", "source": "canonical"},  # Diphtheria-Tetanus (pediatric)
+    {"drugbank_id": None, "generic_name": "TD", "source": "canonical"},  # Tetanus-Diphtheria (adult)
+    {"drugbank_id": None, "generic_name": "DTP", "source": "canonical"},  # Diphtheria-Tetanus-Pertussis
+    {"drugbank_id": None, "generic_name": "DTAP", "source": "canonical"},  # Diphtheria-Tetanus-acellular Pertussis
+    {"drugbank_id": "DB10584", "generic_name": "DTP + HIB", "source": "canonical"},  # Infanrix-Hexa
+    {"drugbank_id": "DB10584", "generic_name": "DTAP + HIB", "source": "canonical"},
+    {"drugbank_id": "DB10797", "generic_name": "DTP + HEPATITIS B VACCINE", "source": "canonical"},  # Pediarix
+    {"drugbank_id": "DB11627", "generic_name": "HEPATITIS A + B VACCINE", "source": "canonical"},  # Twinrix
+    {"drugbank_id": None, "generic_name": "HEPATITIS B VACCINE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "HIB VACCINE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "PNEUMOCOCCAL VACCINE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "MMR", "source": "canonical"},  # Measles-Mumps-Rubella
+    {"drugbank_id": None, "generic_name": "MMRV", "source": "canonical"},  # Measles-Mumps-Rubella-Varicella
+    {"drugbank_id": None, "generic_name": "IPV", "source": "canonical"},  # Inactivated Polio Vaccine
+    {"drugbank_id": None, "generic_name": "OPV", "source": "canonical"},  # Oral Polio Vaccine
+    {"drugbank_id": None, "generic_name": "BCG", "source": "canonical"},  # Bacillus Calmette-Guérin
+    # Special non-drug category
+    {"drugbank_id": None, "generic_name": "DRUGS AND MEDICINES NOT NEEDED DURING THIS PARTICULAR EPISODE OF CARE", "source": "canonical"},
+    # Hormone combinations
+    {"drugbank_id": None, "generic_name": "CONJUGATED EQUINE ESTROGEN + MEDROXYPROGESTERONE ACETATE", "source": "canonical"},
+    # Cephalosporins (already in DrugBank but adding for robustness)
+    {"drugbank_id": "DB00493", "generic_name": "CEFOTAXIME", "source": "canonical"},
+    {"drugbank_id": "DB01212", "generic_name": "CEFTRIAXONE", "source": "canonical"},
+    # Special compounds
+    {"drugbank_id": None, "generic_name": "DIMERCAPTOPROPANE SULFONATE", "source": "canonical"},
+    {"drugbank_id": None, "generic_name": "DMPS", "source": "canonical"},
+]
+
+# ATC codes for canonical generics (only for items not in DrugBank ATC table)
+CANONICAL_ATC_MAPPINGS: List[Dict[str, Any]] = [
+    # Amoxicillin + Clavulanic acid -> J01CR02
+    {"drugbank_id": "DB00766", "generic_name": "AMOXICILLIN + CLAVULANIC ACID", "atc_code": "J01CR02"},
+    {"drugbank_id": "DB00766", "generic_name": "CO-AMOXICLAV", "atc_code": "J01CR02"},
+    # Sulfamethoxazole + Trimethoprim -> J01EE01
+    {"drugbank_id": None, "generic_name": "COTRIMOXAZOLE", "atc_code": "J01EE01"},
+    {"drugbank_id": None, "generic_name": "SULFAMETHOXAZOLE + TRIMETHOPRIM", "atc_code": "J01EE01"},
+    # Ampicillin + Sulbactam
+    {"drugbank_id": None, "generic_name": "AMPICILLIN + SULBACTAM", "atc_code": "J01CR01"},
+    {"drugbank_id": None, "generic_name": "SULTAMICILLIN", "atc_code": "J01CR04"},
+    # IV Solutions - Ringer's
+    {"drugbank_id": None, "generic_name": "ACETATED RINGER'S SOLUTION", "atc_code": "B05BB01"},
+    {"drugbank_id": None, "generic_name": "RINGER'S SOLUTION, ACETATED", "atc_code": "B05BB01"},
+    {"drugbank_id": None, "generic_name": "LACTATED RINGER'S SOLUTION", "atc_code": "B05BB01"},
+    {"drugbank_id": None, "generic_name": "RINGER'S SOLUTION, LACTATED", "atc_code": "B05BB01"},
+    # Parenteral nutrition - Amino acids
+    {"drugbank_id": None, "generic_name": "AMINO ACIDS", "atc_code": "B05BA01"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR HEPATIC FAILURE", "atc_code": "B05BA01"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR INFANTS", "atc_code": "B05BA01"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR RENAL CONDITIONS", "atc_code": "B05BA01"},
+    {"drugbank_id": None, "generic_name": "AMINO ACID SOLUTIONS FOR IMMUNONUTRITION/IMMUNOENHANCEMENT", "atc_code": "B05BA01"},
+    # Antacids
+    {"drugbank_id": "DB06723", "generic_name": "ALUMINIUM HYDROXIDE + MAGNESIUM HYDROXIDE", "atc_code": "A02AD01"},
+    {"drugbank_id": "DB06723", "generic_name": "ALUMINUM HYDROXIDE + MAGNESIUM HYDROXIDE", "atc_code": "A02AD01"},
+    # Bone drugs
+    {"drugbank_id": None, "generic_name": "ALENDRONATE + CHOLECALCIFEROL", "atc_code": "M05BB03"},
+    # Vitamins IV
+    {"drugbank_id": None, "generic_name": "VITAMINS INTRAVENOUS, FAT-SOLUBLE", "atc_code": "B05XC"},
+    {"drugbank_id": None, "generic_name": "VITAMINS INTRAVENOUS, WATER-SOLUBLE", "atc_code": "B05XC"},
+    # Philippine herbal
+    {"drugbank_id": None, "generic_name": "AKAPULKO", "atc_code": "D01AE"},
+    {"drugbank_id": None, "generic_name": "CASSIA ALATA", "atc_code": "D01AE"},
+    # Topical combinations
+    {"drugbank_id": None, "generic_name": "BENZOIC ACID + SALICYLIC ACID", "atc_code": "D01AE20"},
+    {"drugbank_id": None, "generic_name": "BACITRACIN + NEOMYCIN + POLYMYXIN B", "atc_code": "D06AX"},
+    {"drugbank_id": "DB00443", "generic_name": "CALCIPOTRIOL + BETAMETHASONE", "atc_code": "D05AX52"},
+    # Respiratory combinations
+    {"drugbank_id": "DB01222", "generic_name": "BUDESONIDE + FORMOTEROL", "atc_code": "R03AK07"},
+    {"drugbank_id": None, "generic_name": "SALMETEROL + FLUTICASONE", "atc_code": "R03AK06"},
+    # Calcium + Vitamin D
+    {"drugbank_id": None, "generic_name": "CALCIUM CARBONATE + CHOLECALCIFEROL", "atc_code": "A12AX"},
+    {"drugbank_id": None, "generic_name": "CALCIUM + VITAMIN D", "atc_code": "A12AX"},
+    # Dialysis solutions
+    {"drugbank_id": None, "generic_name": "DIALYSATE", "atc_code": "B05DB"},
+    {"drugbank_id": None, "generic_name": "DIALYSATE (ACETATE BASED)", "atc_code": "B05DB"},
+    {"drugbank_id": None, "generic_name": "DIALYSATE (BICARBONATE BASED)", "atc_code": "B05DB"},
+    {"drugbank_id": None, "generic_name": "DOUSOL", "atc_code": "B05DB"},
+    # Insulin
+    {"drugbank_id": "DB00030", "generic_name": "BIPHASIC ISOPHANE HUMAN INSULIN", "atc_code": "A10AD01"},
+    {"drugbank_id": "DB00030", "generic_name": "INSULIN HUMAN", "atc_code": "A10AB01"},
+    # Vaccines
+    {"drugbank_id": None, "generic_name": "DIPHTHERIA-TETANUS TOXOIDS", "atc_code": "J07AM51"},
+    {"drugbank_id": None, "generic_name": "DTP", "atc_code": "J07CA01"},
+    {"drugbank_id": None, "generic_name": "DTAP", "atc_code": "J07CA01"},
+    {"drugbank_id": "DB10584", "generic_name": "DTP + HIB", "atc_code": "J07CA06"},
+    {"drugbank_id": "DB10584", "generic_name": "DTAP + HIB", "atc_code": "J07CA06"},
+    {"drugbank_id": "DB10797", "generic_name": "DTP + HEPATITIS B VACCINE", "atc_code": "J07CA05"},
+    {"drugbank_id": "DB11627", "generic_name": "HEPATITIS A + B VACCINE", "atc_code": "J07BC20"},
+    {"drugbank_id": None, "generic_name": "HEPATITIS B VACCINE", "atc_code": "J07BC01"},
+    {"drugbank_id": None, "generic_name": "HIB VACCINE", "atc_code": "J07AG01"},
+    {"drugbank_id": None, "generic_name": "PNEUMOCOCCAL VACCINE", "atc_code": "J07AL01"},
+    {"drugbank_id": None, "generic_name": "MMR", "atc_code": "J07BD52"},
+    {"drugbank_id": None, "generic_name": "MMRV", "atc_code": "J07BD54"},
+    {"drugbank_id": None, "generic_name": "IPV", "atc_code": "J07BF03"},
+    {"drugbank_id": None, "generic_name": "OPV", "atc_code": "J07BF02"},
+    {"drugbank_id": None, "generic_name": "BCG", "atc_code": "J07AN01"},
+    # Hormone combinations
+    {"drugbank_id": None, "generic_name": "CONJUGATED EQUINE ESTROGEN + MEDROXYPROGESTERONE ACETATE", "atc_code": "G03FB"},
+    # Cephalosporins
+    {"drugbank_id": "DB00493", "generic_name": "CEFOTAXIME", "atc_code": "J01DD01"},
+    {"drugbank_id": "DB01212", "generic_name": "CEFTRIAXONE", "atc_code": "J01DD04"},
+    # Special compounds
+    {"drugbank_id": None, "generic_name": "DIMERCAPTOPROPANE SULFONATE", "atc_code": "V03AB"},
+    {"drugbank_id": None, "generic_name": "DMPS", "atc_code": "V03AB"},
+]
+
+
+# ============================================================================
 # EXPORTS
 # ============================================================================
 
@@ -1334,4 +1521,7 @@ __all__ = [
     
     # Text utilities (for submodules)
     "normalize_text", "parse_form_from_text",
+    
+    # Canonical generics and ATC mappings
+    "CANONICAL_GENERICS", "CANONICAL_ATC_MAPPINGS",
 ]
