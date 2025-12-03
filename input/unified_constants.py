@@ -366,6 +366,13 @@ FORM_CANON: Dict[str, str] = {
     "BAG": "BAG", "BAGS": "BAG",
     "KIT": "KIT", "KITS": "KIT",
     
+    # Film coating abbreviations (formulation markers)
+    "FC": "FILM COATED", "EC": "ENTERIC COATED", "SR": "EXTENDED RELEASE", 
+    "XR": "EXTENDED RELEASE", "ER": "EXTENDED RELEASE", "DR": "DELAYED RELEASE",
+    
+    # Other formulation markers (NON-PNF means "not in Philippine National Formulary")
+    "NON-PNF": "NON-FORMULARY", "NONPNF": "NON-FORMULARY",
+    
     # Topical forms
     "CREAM": "CREAM", "CREAMS": "CREAM", "CREAM, AUGMENTED": "CREAM",
     "LOTION": "LOTION", "LOTIONS": "LOTION", "LOTION, AUGMENTED": "LOTION",
@@ -1042,11 +1049,11 @@ GENERIC_SYNONYMS: Dict[str, str] = {
     'THIAMAZOLE': 'METHIMAZOLE',
     'METHIMAZOLE': 'THIAMAZOLE',
     
-    # Combination drug synonyms
-    'CO-AMOXICLAV': 'AMOXICILLIN AND BETA-LACTAMASE INHIBITOR',
-    'AMOXICILLIN AND BETA-LACTAMASE INHIBITOR': 'CO-AMOXICLAV',
-    'AMOXICILLIN-CLAVULANIC ACID': 'CO-AMOXICLAV',
-    'AMOXICILLIN + CLAVULANIC ACID': 'CO-AMOXICLAV',
+    # Combination drug synonyms - canonical form is AMOXICILLIN + CLAVULANIC ACID
+    'CO-AMOXICLAV': 'AMOXICILLIN + CLAVULANIC ACID',
+    'AMOXICILLIN-CLAVULANIC ACID': 'AMOXICILLIN + CLAVULANIC ACID',
+    'AMOXICILLIN AND CLAVULANATE POTASSIUM': 'AMOXICILLIN + CLAVULANIC ACID',
+    'AUGMENTIN': 'AMOXICILLIN + CLAVULANIC ACID',
     
     # Aluminum/Aluminium spelling
     'ALUMINUM HYDROXIDE': 'ALUMINIUM HYDROXIDE',
@@ -1059,16 +1066,21 @@ GENERIC_SYNONYMS: Dict[str, str] = {
 # ============================================================================
 
 IV_FLUID_SYNONYMS: Dict[str, str] = {
-    'D5W': 'DEXTROSE',
-    'D5': 'DEXTROSE',
-    'NSS': 'SODIUM CHLORIDE',
-    'PNSS': 'SODIUM CHLORIDE',
+    # NOTE: Main synonyms are in SPELLING_SYNONYMS - this dict is for compatibility
+    # D5 = 5% Dextrose, D10 = 10% Dextrose (concentration captured separately)
+    'D5': 'GLUCOSE',            # 5% Dextrose
+    'D5W': 'GLUCOSE',           # 5% Dextrose in Water
+    'D10': 'GLUCOSE',           # 10% Dextrose
+    'D10W': 'GLUCOSE',          # 10% Dextrose in Water
+    'DEXTROSE': 'GLUCOSE',
+    'NSS': 'SODIUM CHLORIDE',   # Normal Saline Solution (0.9%)
+    'PNSS': 'SODIUM CHLORIDE',  # Plain Normal Saline Solution
     'NORMAL SALINE': 'SODIUM CHLORIDE',
     'LR': "LACTATED RINGER'S",
-    "LACTATED RINGER'S": 'LR',
-    'D5LR': 'DEXTROSE',
+    'LRS': "LACTATED RINGER'S",
+    'D5LR': 'GLUCOSE + LACTATED RINGER\'S',   # 5% Dextrose + LR
+    'D5NSS': 'GLUCOSE + SODIUM CHLORIDE',     # 5% Dextrose + NSS
     'STERILE WATER': 'WATER FOR INJECTION',
-    'WATER FOR INJECTION': 'STERILE WATER',
 }
 
 # ============================================================================
@@ -1103,9 +1115,16 @@ SPELLING_SYNONYMS: Dict[str, str] = {
     # Common/trade names that are really generics
     "ASPIRIN": "ACETYLSALICYLIC ACID",
     "ASA": "ACETYLSALICYLIC ACID",
-    # Combination drug trade names -> generic components
+    # Combination drug trade names -> canonical generic form
+    # CO-AMOXICLAV = Amoxicillin + Clavulanic acid (J01CR02)
     "CO-AMOXICLAV": "AMOXICILLIN + CLAVULANIC ACID",
+    "AUGMENTIN": "AMOXICILLIN + CLAVULANIC ACID",
+    "AMOXICILLIN AND CLAVULANATE POTASSIUM": "AMOXICILLIN + CLAVULANIC ACID",
+    "AMOXICILLIN AND CLAVULANIC ACID": "AMOXICILLIN + CLAVULANIC ACID",
+    # Cotrimoxazole = Sulfamethoxazole + Trimethoprim (J01EE01)
     "COTRIMOXAZOLE": "SULFAMETHOXAZOLE + TRIMETHOPRIM",
+    "CO-TRIMOXAZOLE": "SULFAMETHOXAZOLE + TRIMETHOPRIM",
+    "BACTRIM": "SULFAMETHOXAZOLE + TRIMETHOPRIM",
     # Salt form synonyms
     "POTASSIUM CLAVULANATE": "CLAVULANIC ACID",
     "CLAVULANATE": "CLAVULANIC ACID",
@@ -1120,6 +1139,33 @@ SPELLING_SYNONYMS: Dict[str, str] = {
     "VIT D": "VITAMIN D",
     "VIT E": "VITAMIN E",
     "VIT K": "VITAMIN K",
+    # Regional/INN name synonyms (map to DrugBank name for lookup)
+    "HYOSCINE-N-BUTYLBROMIDE": "BUTYLSCOPOLAMINE",
+    "HYOSCINE BUTYLBROMIDE": "BUTYLSCOPOLAMINE",
+    "HYOSCINE N-BUTYLBROMIDE": "BUTYLSCOPOLAMINE",
+    "SCOPOLAMINE BUTYLBROMIDE": "BUTYLSCOPOLAMINE",
+    "DIMETICONE": "SIMETHICONE",  # INN name → US name
+    # Common IV solution abbreviations
+    # Note: D5 = 5% Dextrose, D10 = 10% Dextrose - concentration is in dose field
+    # DEXTROSE/D-GLUCOSE = GLUCOSE (same compound, WHO ATC uses "GLUCOSE")
+    "PNSS": "SODIUM CHLORIDE",  # Plain Normal Saline Solution
+    "NSS": "SODIUM CHLORIDE",   # Normal Saline Solution
+    "D5": "GLUCOSE",            # 5% Dextrose → GLUCOSE for ATC (V06DC01)
+    "D5W": "GLUCOSE",           # 5% Dextrose in Water
+    "D10": "GLUCOSE",           # 10% Dextrose → GLUCOSE for ATC
+    "D10W": "GLUCOSE",          # 10% Dextrose in Water
+    "DEXTROSE": "GLUCOSE",      # Dextrose = D-glucose = Glucose
+    "D-GLUCOSE": "GLUCOSE",     # DrugBank name → WHO ATC name
+    "LRS": "LACTATED RINGER'S", # Lactated Ringer's Solution
+    "D5LR": "GLUCOSE + LACTATED RINGER'S",
+    "D5NSS": "GLUCOSE + SODIUM CHLORIDE",
+    # Brand name mappings
+    "REBAMID": "REBAMIPIDE",
+    # Alcohol synonyms
+    "ETHYL ALCOHOL": "ETHANOL",
+    "ALCOHOL ETHYL": "ETHANOL",  # Annex F format: "ALCOHOL, ETHYL"
+    "ISOPROPYL ALCOHOL": "ISOPROPANOL",
+    "ALCOHOL ISOPROPYL": "ISOPROPANOL",
 }
 
 # ============================================================================
