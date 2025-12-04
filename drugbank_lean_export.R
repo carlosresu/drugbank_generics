@@ -115,8 +115,10 @@ filter_vet <- function(df, id_col = "drugbank_id") {
 # =============================================================================
 cat("\n[1] generics_lean...\n")
 generics <- drugbank$drugs$general_information[, c("drugbank_id", "name", "type", "cas_number", "unii")]
-generics$name <- normalize_name(generics$name)
-generics$name_key <- normalize_key(generics$name)
+# Standardize: name -> generic_name
+names(generics)[names(generics) == "name"] <- "generic_name"
+generics$generic_name <- normalize_name(generics$generic_name)
+generics$name_key <- normalize_key(generics$generic_name)
 generics <- filter_vet(generics)
 generics <- unique(generics)
 cat(sprintf("    %d rows\n", nrow(generics)))
@@ -165,6 +167,9 @@ synonyms$coder_tokens <- NULL
 
 synonyms <- filter_vet(synonyms)
 synonyms <- unique(synonyms[, c("drugbank_id", "synonym", "synonym_key", "coder")])
+# Standardize: synonym -> synonyms (plural)
+names(synonyms)[names(synonyms) == "synonym"] <- "synonyms"
+names(synonyms)[names(synonyms) == "synonym_key"] <- "synonyms_key"
 cat(sprintf("    %d rows\n", nrow(synonyms)))
 write_csv_only(synonyms, "synonyms_lean")
 
@@ -186,8 +191,10 @@ write_csv_only(dosages, "dosages_lean")
 # =============================================================================
 cat("[4] brands_lean...\n")
 brands <- drugbank$drugs$international_brands[, c("drugbank_id", "brand", "company")]
-brands$brand <- sapply(brands$brand, function(x) normalize_name(normalize_brand(x)))
-brands$brand_key <- normalize_key(brands$brand)
+# Standardize: brand -> brand_name
+names(brands)[names(brands) == "brand"] <- "brand_name"
+brands$brand_name <- sapply(brands$brand_name, function(x) normalize_name(normalize_brand(x)))
+brands$brand_key <- normalize_key(brands$brand_name)
 brands <- filter_vet(brands)
 brands <- unique(brands)
 cat(sprintf("    %d rows\n", nrow(brands)))
@@ -198,8 +205,10 @@ write_csv_only(brands, "brands_lean")
 # =============================================================================
 cat("[5] salts_lean...\n")
 salts <- drugbank$salts[, c("drugbank_id", "db_salt_id", "name", "cas_number", "unii", "inchikey")]
-salts$name <- normalize_name(salts$name)
-salts$name_key <- normalize_key(salts$name)
+# Standardize: name -> salt_name (to distinguish from generic_name)
+names(salts)[names(salts) == "name"] <- "salt_name"
+salts$salt_name <- normalize_name(salts$salt_name)
+salts$name_key <- normalize_key(salts$salt_name)
 salts <- filter_vet(salts)
 salts <- unique(salts)
 cat(sprintf("    %d rows\n", nrow(salts)))
