@@ -1,6 +1,29 @@
-# DrugBank lean exports (PIDS DRG)
+# pids-drg-drugbank-generics
 
 Generates lean, normalized CSV extracts from the DrugBank dataset for downstream PIDS DRG matching pipelines (FDA scrapers, authority builders, etc.). Outputs live under `./output/` and are meant to be copied into consumer repos (e.g., `../pids-drg-fda-scraper/input/`).
+
+**Last Updated:** December 2025
+
+---
+
+## Progress Since June 2025
+
+| Date | Milestone |
+|------|-----------|
+| **Jun-Jul 2025** | Initial R script with basic generics export |
+| **Aug 2025** | Added synonyms with language/coder filtering |
+| **Sep 2025** | Added dosages, brands, salts, mixtures lean tables |
+| **Oct 2025** | Added lookup tables for normalization (salt suffixes, form/route canonical) |
+| **Nov 2025** | Created `_shared.R` for common setup, optimized parallelization |
+| **Dec 2025** | Default workers set to min(8, cores), cross-platform support |
+
+### Current Outputs
+
+- **8 Data Tables:** generics, synonyms, dosages, brands, salts, mixtures, products, atc_lean
+- **6 Lookup Tables:** salt_suffixes, pure_salts, form_canonical, route_canonical, form_to_route, per_unit
+- **Runtime:** ~433s total with 8 workers
+
+---
 
 ## Requirements
 - R ≥ 4.1
